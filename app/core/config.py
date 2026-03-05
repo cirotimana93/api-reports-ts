@@ -32,6 +32,18 @@ class Settings(BaseSettings):
     LOT_USER: str = ""
     LOT_PASS: str = ""
 
+    # s3
+    AWS_BUCKET_NAME: str = ""
+    AWS_REGION: str = ""
+    AWS_ROLE_ARN: str = ""
+    AWS_ACCESS_KEY: str = ""
+    AWS_SECRET_KEY: str = ""
+
+    # graph api
+    GRAPH_CLIENT_ID: str = ""
+    GRAPH_CLIENT_SECRET: str = ""
+    GRAPH_TENANT_ID: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
 settings = Settings()

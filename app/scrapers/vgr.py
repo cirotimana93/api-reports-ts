@@ -1,8 +1,13 @@
-from typing import Any, List, Optional
+import os
+import asyncio
+import json
+import httpx
+from datetime import datetime, timedelta
+from typing import Any, List, Optional, Dict
 from playwright.async_api import async_playwright
 from app.common.base_scraper import BaseScraper
+from app.common.s3_utils import upload_file_to_s3
 from app.core.config import settings
-import json
 
 class VGRScraper(BaseScraper):
     def __init__(self):
@@ -10,98 +15,230 @@ class VGRScraper(BaseScraper):
         self.domain = settings.VGR_DOMINIO
         self.username = settings.VGR_USER
         self.password = settings.VGR_PASS
+        self.api_url = "https://america-manager.virtustec.com/manager/manager-api-ws/api/manager/v0.1/ticket/find"
+        self.entity_id = "1776922"
+        self.data_dir = "data"
 
-    async def scrape(self) -> List[Any]:
-        """realiza el login y luego extrae los datos"""
+        # crear carpeta de datos si no existe
+        if not os.path.exists(self.data_dir):
+            os.makedirs(self.data_dir)
+
+    async def get_auth_info(self) -> Optional[Dict]:
+        """login en vgr y captura el bearer token desde los headers de las peticiones al api"""
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
             page = await context.new_page()
 
-            # objeto para guardar el token capturado
             session_data = {"token": None}
+            token_event = asyncio.Event()
 
-            async def handle_response(response):
-                if "/session/login" in response.url:
-                    try:
-                        status = response.status
-                        print(f"[{self.name}] respuesta de login detectada: {status}")
-                        if status == 200:
-                            data = await response.json()
-                            if "token" in data:
-                                session_data["token"] = data["token"]
-                                print(f"[{self.name}] token de acceso capturado desde la red")
-                            else:
-                                print(f"[{self.name}] respuesta 200 pero no se encontro 'token' en el json: {data.keys()}")
-                        else:
-                            body = await response.text()
-                            print(f"[{self.name}] error en login, status {status}: {body}")
-                    except Exception as e:
-                        print(f"[{self.name}] error procesando respuesta: {str(e)}")
+            async def handle_request(request):
+                # el bearer token valido aparece en las peticiones al api de tickets
+                if "/manager-api-ws/api/" in request.url and not token_event.is_set():
+                    auth_header = request.headers.get("authorization", "")
+                    if auth_header.startswith("Bearer "):
+                        session_data["token"] = auth_header[len("Bearer "):]
+                        print(f"[{self.name}] token capturado desde headers del api")
+                        token_event.set()
 
-            page.on("response", handle_response)
+            page.on("request", handle_request)
 
             try:
-                # 1. ir a la pagina de inicio
                 print(f"[{self.name}] navegando a {self.base_url}")
                 await page.goto(self.base_url, timeout=60000, wait_until="networkidle")
-                
-                print(f"[{self.name}] url actual: {page.url}")
 
-                # 2. realizar login
+                # llenar formulario de login
+                print(f"[{self.name}] esperando formulario de login")
+                await page.wait_for_selector('input[formcontrolname="domain"]', timeout=15000)
+
+                await page.click('input[formcontrolname="domain"]')
+                await page.type('input[formcontrolname="domain"]', self.domain, delay=50)
+
+                await page.click('input[formcontrolname="username"]')
+                await page.type('input[formcontrolname="username"]', self.username, delay=50)
+
+                await page.click('input[type="password"]')
+                await page.type('input[type="password"]', self.password, delay=50)
+
+                print(f"[{self.name}] enviando formulario de login")
+                await page.click('button[type="submit"]')
+                await page.wait_for_load_state("networkidle")
+                await asyncio.sleep(3)
+
+                # si el token aun no fue capturado, navegar a la seccion de tickets para disparar el api
+                if not token_event.is_set():
+                    print(f"[{self.name}] navegando a reportes para capturar token...")
+                    try:
+                        await page.goto(
+                            f"{self.base_url}reports/tickets",
+                            timeout=20000, wait_until="networkidle"
+                        )
+                        await asyncio.sleep(3)
+                    except Exception:
+                        pass
+
+                # esperar hasta 15s al token
                 try:
-                    print(f"[{self.name}] esperando formulario de login")
-                    await page.wait_for_selector('input[formcontrolname="domain"]', timeout=15000)
-                    
-                    print(f"[{self.name}] llenando credenciales (usando type para disparar eventos)")
-                    await page.click('input[formcontrolname="domain"]')
-                    await page.type('input[formcontrolname="domain"]', self.domain, delay=50)
-                    
-                    await page.click('input[formcontrolname="username"]')
-                    await page.type('input[formcontrolname="username"]', self.username, delay=50)
-                    
-                    await page.click('input[type="password"]')
-                    await page.type('input[type="password"]', self.password, delay=50)
-                    
-                    is_disabled = await page.eval_on_selector('button[type="submit"]', "el => el.disabled")
-                    print(f"[{self.name}] estado del boton submit (disabled): {is_disabled}")
+                    await asyncio.wait_for(token_event.wait(), timeout=15)
+                except asyncio.TimeoutError:
+                    print(f"[{self.name}] timeout esperando token")
 
-                    # hacer clic en ingresar
-                    print(f"[{self.name}] haciendo clic en sign in")
-                    await page.click('button[type="submit"]')
-                    
-                    # esperamos un poco a que las peticiones se procesen y angular haga lo suyo
-                    await page.wait_for_load_state("networkidle")
-                    await asyncio.sleep(2) # espera extra para asegurar captura de token
-                    print(f"[{self.name}] url despues del login: {page.url}")
-                except Exception as e:
-                    print(f"[{self.name}] error durante el login o espera de respuesta: {str(e)}")
+                if not session_data["token"]:
+                    print(f"[{self.name}] error: no se capturo el token")
+                    return None
 
-                cookies = await context.cookies()
-                
-                return [{
-                    "source": self.name, 
-                    "status": "success",
-                    "url": page.url,
-                    "token": session_data["token"],
-                    "cookies_count": len(cookies)
-                }]
+                print(f"[{self.name}] sesion lista")
+                return session_data
 
             except Exception as e:
-                print(f"[{self.name}] error durante el scraping: {str(e)}")
-                return [{
-                    "source": self.name,
-                    "status": "error",
-                    "message": str(e)
-                }]
+                print(f"[{self.name}] error en get_auth_info: {e}")
+                return None
             finally:
                 await browser.close()
 
+    async def _fetch_api_data(self, auth_info: Dict, start_date: str, end_date: str) -> Any:
+        """extrae datos del api de tickets con paginacion por offset"""
+        # formatear fechas
+        from_iso = f"{start_date}T05:00:00.000Z"
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+        to_iso = f"{end_dt.strftime('%Y-%m-%d')}T04:59:59.999Z"
+
+        print(f"fechas recibidas: {start_date} - {end_date}")
+        print(f"fechas formateadas: {from_iso} - {to_iso}")
+
+        all_data = []
+        offset = 0
+        page_size = 500
+        total_records = None
+
+        headers = {
+            "Authorization": f"Bearer {auth_info['token']}",
+            "accept": "application/json",
+            "content-type": "application/json",
+            "origin": "https://america-admin.virtustec.com",
+            "referer": "https://america-admin.virtustec.com/",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        }
+
+        async with httpx.AsyncClient() as client:
+            while True:
+                params = {
+                    "entityId": self.entity_id,
+                    "startTime": from_iso,
+                    "endTime": to_iso,
+                    "first": offset,
+                    "n": page_size,
+                    "levelDetails": "1",
+                    "orderBy": "DESC",
+                    "status": "",
+                    "withChildren": "true"
+                }
+
+                print(f"[{self.name}] extrayendo offset {offset}...")
+                response = await client.get(self.api_url, params=params, headers=headers, timeout=60.0)
+
+                if response.status_code != 200:
+                    print(f"[{self.name}] error en api (offset {offset}): {response.status_code}")
+                    break
+
+                page_data = response.json()
+
+                if not isinstance(page_data, list) or not page_data:
+                    break
+
+                all_data.extend(page_data)
+
+                # obtener total del header x-total-count si existe, si no inferir por el tamanio de la pagina
+                if total_records is None:
+                    total_header = response.headers.get("x-total-count") or response.headers.get("X-Total-Count")
+                    if total_header:
+                        total_records = int(total_header)
+
+                count_label = f"/ {total_records}" if total_records else ""
+                print(f"[{self.name}] progreso: {len(all_data)} {count_label}")
+
+                # si la pagina devolvio menos registros de los solicitados, ya termino
+                if len(page_data) < page_size:
+                    break
+
+                offset += page_size
+                await asyncio.sleep(0.5)
+
+        return {
+            "data": all_data,
+            "total": total_records or len(all_data)
+        }
+
+    async def scrape(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Any]:
+        """flujo principal: login, extraccion y guardado de datos"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        s_date = start_date if start_date else today
+        e_date = end_date if end_date else today
+
+        print(f"fechas enviadas: {s_date} - {e_date}")
+
+        # validacion de fechas
+        try:
+            if datetime.strptime(s_date, "%Y-%m-%d") > datetime.strptime(e_date, "%Y-%m-%d"):
+                print(f"[{self.name}] fecha inicio mayor a fecha fin")
+                return [{"source": self.name, "status": "error", "message": "fecha invalida"}]
+        except ValueError:
+            print(f"[{self.name}] formato de fecha invalido")
+            return [{"source": self.name, "status": "error", "message": "formato invalido"}]
+
+        auth_info = await self.get_auth_info()
+        if not auth_info:
+            return [{"source": self.name, "status": "error", "message": "error de autenticacion"}]
+
+        report_data = await self._fetch_api_data(auth_info, s_date, e_date)
+
+        if not report_data["data"]:
+            print(f"[{self.name}] no se encontraron registros")
+            return [{"source": self.name, "status": "success", "message": "sin datos", "count": 0}]
+
+        # guardar json en disco
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{self.name.lower()}_reporte_{s_date.replace('-','')}_{e_date.replace('-','')}_{timestamp}.json"
+        filepath = os.path.join(self.data_dir, filename)
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(report_data, f, indent=4, ensure_ascii=False)
+
+        print(f"[{self.name}] datos guardados en: {filepath}")
+
+        # subir a s3
+        s3_key = f"tls/reports/{filename}"
+        with open(filepath, "rb") as f:
+            upload_file_to_s3(f.read(), s3_key)
+
+
+        # resumen en consola
+        items = report_data["data"]
+        print(f"\n[{self.name}] resumen de los primeros 5 registros:")
+        for i, item in enumerate(items[:5]):
+            ticket_id = item.get("ticketId", "n/a")
+            status = item.get("status", "n/a")
+            stake = item.get("stake", 0)
+            currency = item.get("currency", {}).get("code", "")
+            user = item.get("unit", {}).get("name", "n/a")
+            registered = item.get("timeRegister", "n/a")
+            print(f"{i+1}. ID: {ticket_id} | Estado: {status} | Monto: {stake} {currency} | Usuario: {user} | Fecha: {registered}")
+
+        return [{
+            "source": self.name,
+            "status": "success",
+            "file": filepath,
+            "count": len(items),
+            "total": report_data["total"]
+        }]
+
 if __name__ == "__main__":
-    import asyncio
     async def test():
         scraper = VGRScraper()
         result = await scraper.scrape()
         print(json.dumps(result, indent=2))
-    
+
     asyncio.run(test())

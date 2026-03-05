@@ -6,7 +6,9 @@ from datetime import datetime, timedelta
 from typing import Any, List, Optional, Dict
 from playwright.async_api import async_playwright
 from app.common.base_scraper import BaseScraper
+from app.common.s3_utils import upload_file_to_s3, delete_file_from_s3, copy_file_in_s3
 from app.core.config import settings
+from app.scrapers.first_converter import convert_first_report
 
 class FIRSTScraper(BaseScraper):
     def __init__(self):
@@ -14,6 +16,8 @@ class FIRSTScraper(BaseScraper):
         self.username = settings.FIRST_USER
         self.password = settings.FIRST_PASS
         self.api_url = "https://bo.firstsports.tech/api/auth/reports/openbets"
+        self.bethistory_url = "https://bo.firstsports.tech/api/auth/reports/bethistory"
+        self.declinedbets_url = "https://bo.firstsports.tech/api/auth/reports/declinedbets"
         self.data_dir = "data"
         
         # crear carpeta de datos si no existe
@@ -170,12 +174,8 @@ class FIRSTScraper(BaseScraper):
             finally:
                 await browser.close()
 
-    async def _fetch_api_data(self, auth_info: Dict, start_date: str, end_date: str) -> Any:
-        """consulta el api de openbets con paginacion"""
-        from_iso = f"{start_date}T05:00:00.000000Z"
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
-        to_iso = f"{end_dt.strftime('%Y-%m-%d')}T04:59:59.999999Z"
-
+    async def _fetch_report(self, auth_info: Dict, url: str, base_payload: Dict, label: str) -> Any:
+        """metodo generico de extraccion con paginacion para cualquier endpoint de first"""
         all_data = []
         page = 1
         limit = 500
@@ -188,70 +188,20 @@ class FIRSTScraper(BaseScraper):
             "content-type": "application/json",
             "accept": "application/json, text/plain, */*",
             "origin": "https://bo.firstsports.tech",
-            "referer": "https://bo.firstsports.tech/reports/open-bets",
+            "referer": "https://bo.firstsports.tech",
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "cookie": auth_info.get("cookies", "")
         }
 
-        print(f"fechas recibidas: {start_date} - {end_date}")
-        print(f"fechas formateadas: {from_iso} - {to_iso}")
-
         async with httpx.AsyncClient() as client:
             while True:
-                payload = {
-                    "pageNumber": page,
-                    "pageSize": limit,
-                    "orderBy": "CreationDate",
-                    "orderDirection": "DESC",
-                    "from": from_iso,
-                    "to": to_iso,
-                    "displayCurrency": [40, 21, 6, 27, 13, 14, 8, 2, 1, 3],
-                    "freeBetSource": [0, 1, 2, 3],
-                    "gamificationId": "",
-                    "isTotal": False,
-                    "customerID": "",
-                    "username": "",
-                    "merchantCustomerCode": "",
-                    "betSlipCode": "",
-                    "amountCondition": "",
-                    "amountCurrency": "PlayerCurrency",
-                    "amountType": -1,
-                    "betSlip": -1,
-                    "boostedOdds": -1,
-                    "comboBonus": -1,
-                    "contributionType": -2,
-                    "crossBetting": -1,
-                    "depositBonus": -1,
-                    "featuredSelections": -1,
-                    "liveOrPrematch": -1,
-                    "quickBet": -1,
-                    "semiManaged": -1,
-                    "testAccount": -1,
-                    "additionalTicketsType": [],
-                    "betTypes": [],
-                    "bettingView": [],
-                    "brands": [],
-                    "clientTypes": [],
-                    "corporates": [],
-                    "countries": [],
-                    "currencies": [],
-                    "customerLevels": [],
-                    "customerTags": [],
-                    "eventTypes": [],
-                    "events": [],
-                    "leagueGroups": [],
-                    "leagues": [],
-                    "operators": [],
-                    "platform": [],
-                    "promotionId": [],
-                    "sports": []
-                }
+                payload = {**base_payload, "pageNumber": page, "pageSize": limit}
 
-                print(f"[{self.name}] extrayendo datos pagina {page}...")
-                response = await client.post(self.api_url, json=payload, headers=headers, timeout=60.0)
-                
+                print(f"[{self.name}][{label}] extrayendo pagina {page}...")
+                response = await client.post(url, json=payload, headers=headers, timeout=60.0)
+
                 if response.status_code != 200:
-                    print(f"[{self.name}] error en api (pagina {page}): {response.status_code}")
+                    print(f"[{self.name}][{label}] error en api (pagina {page}): {response.status_code}")
                     break
 
                 result = response.json()
@@ -261,23 +211,88 @@ class FIRSTScraper(BaseScraper):
 
                 page_data = data_obj.get("list", [])
                 total_records = data_obj.get("total", 0)
-                
+
                 all_data.extend(page_data)
-                print(f"[{self.name}] progreso: {len(all_data)} / {total_records}")
+                print(f"[{self.name}][{label}] progreso: {len(all_data)} / {total_records}")
 
                 if len(all_data) >= total_records or not page_data:
                     break
-                
+
                 page += 1
                 await asyncio.sleep(0.5)
 
-        return {
-            "data": all_data,
-            "total": total_records
+        return {"data": all_data, "total": total_records}
+
+    async def _fetch_openbets_data(self, auth_info: Dict, start_date: str, end_date: str) -> Any:
+        """payload para openbets"""
+        from_iso = f"{start_date}T05:00:00.000000Z"
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+        to_iso = f"{end_dt.strftime('%Y-%m-%d')}T04:59:59.999999Z"
+        payload = {
+            "orderBy": "CreationDate", "orderDirection": "DESC",
+            "from": from_iso, "to": to_iso,
+            "displayCurrency": [40, 21, 6, 27, 13, 14, 8, 2, 1, 3],
+            "freeBetSource": [0, 1, 2, 3],
+            "gamificationId": "", "isTotal": False,
+            "customerID": "", "username": "", "merchantCustomerCode": "",
+            "betSlipCode": "", "amountCondition": "", "amountCurrency": "PlayerCurrency",
+            "amountType": -1, "betSlip": -1, "boostedOdds": -1, "comboBonus": -1,
+            "contributionType": -2, "crossBetting": -1, "depositBonus": -1,
+            "featuredSelections": -1, "liveOrPrematch": -1, "quickBet": -1,
+            "semiManaged": -1, "testAccount": -1,
+            "additionalTicketsType": [], "betTypes": [], "bettingView": [],
+            "brands": [], "clientTypes": [], "corporates": [], "countries": [],
+            "currencies": [], "customerLevels": [], "customerTags": [],
+            "eventTypes": [], "events": [], "leagueGroups": [], "leagues": [],
+            "operators": [], "platform": [], "promotionId": [], "sports": []
         }
+        return await self._fetch_report(auth_info, self.api_url, payload, "openbets")
+
+    async def _fetch_bethistory_data(self, auth_info: Dict, start_date: str, end_date: str) -> Any:
+        """payload para bethistory"""
+        from_iso = f"{start_date}T05:00:00.000000Z"
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+        to_iso = f"{end_dt.strftime('%Y-%m-%d')}T04:59:59.999999Z"
+        payload = {
+            "orderBy": "CreationDate", "orderDirection": "DESC",
+            "betPlacementDateFrom": from_iso, "betPlacementDateTo": to_iso,
+            "betSettledDateFrom": None, "betSettledDateTo": None,
+            "displayCurrency": [40, 21, 6, 27, 13, 14, 8, 2, 1, 3],
+            "freeBetSource": [0, 1, 2, 3], "freeBetIds": "",
+            "gamificationId": "", "isTotal": False,
+            "customerID": "", "username": "", "merchantCustomerCode": "",
+            "betSlipCode": "", "amountCondition": "", "amountCurrency": "PlayerCurrency",
+            "amountType": -1, "betSlip": -1, "boostedOdds": -1, "comboBonus": -1,
+            "contributionType": -2, "crossBetting": -1, "depositBonus": -1,
+            "earlyPayout": -1, "featuredSelections": -1, "liveOrPrematch": -1,
+            "quickBet": -1, "resettled": -1, "semiManaged": -1, "testAccount": -1,
+            "additionalTicketsType": [], "betStatus": [], "betTypes": [], "bettingView": [],
+            "brands": [], "clientTypes": [], "corporates": [], "countries": [],
+            "currencies": [], "customerLevels": [], "customerTags": [],
+            "eventTypes": [], "events": [], "leagueGroups": [], "leagues": [],
+            "operators": [], "platform": [], "promotionId": [], "selection": [], "sports": []
+        }
+        return await self._fetch_report(auth_info, self.bethistory_url, payload, "bethistory")
+
+    async def _fetch_declinedbets_data(self, auth_info: Dict, start_date: str, end_date: str) -> Any:
+        """payload para declinedbets"""
+        from_iso = f"{start_date}T05:00:00.000000Z"
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+        to_iso = f"{end_dt.strftime('%Y-%m-%d')}T04:59:59.999999Z"
+        payload = {
+            "orderBy": "CreationDate", "orderDirection": "DESC",
+            "from": from_iso, "to": to_iso,
+            "customerID": "", "username": "", "fullName": "", "merchantCustomerCode": "",
+            "declinedDetails": "", "testAccount": -1,
+            "brands": [], "corporates": [], "currencies": [],
+            "declinedDetailID": [], "declinedReasonID": [], "declinedTypes": [],
+            "eventTypes": [], "events": [], "leagues": [], "operators": [], "sports": []
+        }
+        return await self._fetch_report(auth_info, self.declinedbets_url, payload, "declinedbets")
+
 
     async def scrape(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Any]:
-        """flujo principal: login, extraccion y guardado de datos"""
+        """flujo principal: login, extraccion de 3 reportes y guardado en s3"""
         today = datetime.now().strftime("%Y-%m-%d")
         s_date = start_date if start_date else today
         e_date = end_date if end_date else today
@@ -297,40 +312,79 @@ class FIRSTScraper(BaseScraper):
         if not auth_info:
             return [{"source": self.name, "status": "error", "message": "error de autenticacion"}]
 
-        report_data = await self._fetch_api_data(auth_info, s_date, e_date)
-        
-        if not report_data["data"]:
-            print(f"[{self.name}] no se encontraron registros")
-            return [{"source": self.name, "status": "success", "message": "sin datos", "count": 0}]
+        print(f"fechas recibidas: {s_date} - {e_date}")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        results = []
 
-        # guardar json en disco
-        timestamp = datetime.now().strftime("%Y%md_%H%M%S")
-        filename = f"{self.name.lower()}_reporte_{s_date.replace('-','')}_{e_date.replace('-','')}_{timestamp}.json"
-        filepath = os.path.join(self.data_dir, filename)
+        # definir los 3 reportes a extraer
+        reports = [
+            ("openbets",     self._fetch_openbets_data),
+            ("bethistory",   self._fetch_bethistory_data),
+            ("declinedbets", self._fetch_declinedbets_data),
+        ]
 
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(report_data, f, indent=4, ensure_ascii=False)
+        for report_name, fetch_fn in reports:
+            print(f"\n[{self.name}] iniciando reporte: {report_name}")
+            report_data = await fetch_fn(auth_info, s_date, e_date)
+            count = len(report_data["data"])
 
-        print(f"[{self.name}] datos guardados en: {filepath}")
+            if not count:
+                print(f"[{self.name}][{report_name}] sin datos")
+                results.append({
+                    "source": self.name,
+                    "report": report_name,
+                    "status": "success",
+                    "message": "sin datos",
+                    "count": 0
+                })
+                continue
 
-        # resumen en consola
-        items = report_data["data"]
-        print(f"\n[{self.name}] resumen de los primeros 5 registros:")
-        for i, item in enumerate(items[:5]):
-            pid = item.get("purchaseID", "n/a")
-            date = item.get("creationDate", "n/a")
-            amt = item.get("stakeDecimal", "0")
-            cur = item.get("currencyCode", "")
-            usr = item.get("customer", {}).get("loginName", "n/a")
-            print(f"{i+1}. ID: {pid} | Fecha: {date} | Monto: {amt} {cur} | Usuario: {usr}")
+            # guardar json temporal en disco
+            json_filename = f"{self.name.lower()}_{report_name}_{s_date.replace('-','')}_{e_date.replace('-','')}_{timestamp}.json"
+            json_filepath = os.path.join(self.data_dir, json_filename)
 
-        return [{
-            "source": self.name,
-            "status": "success",
-            "file": filepath,
-            "count": len(items),
-            "total": report_data["total"]
-        }]
+            with open(json_filepath, "w", encoding="utf-8") as f:
+                json.dump(report_data, f, indent=4, ensure_ascii=False)
+
+            print(f"[{self.name}][{report_name}] {count} registros guardados en: {json_filepath}")
+
+            # subir json original a s3/tls/reports/
+            s3_json_key = f"tls/reports/{json_filename}"
+            with open(json_filepath, "rb") as f:
+                upload_file_to_s3(f.read(), s3_json_key)
+            print(f"[{self.name}][{report_name}] json subido: {s3_json_key}")
+
+            # convertir json -> xlsx y subir a s3/tls/reports/
+            try:
+                xlsx_bytes = convert_first_report(report_name, report_data["data"])
+                xlsx_filename = json_filename.replace(".json", ".xlsx")
+                s3_xlsx_key = f"tls/reports/{xlsx_filename}"
+                upload_file_to_s3(xlsx_bytes, s3_xlsx_key)
+                print(f"[{self.name}][{report_name}] xlsx subido: {s3_xlsx_key}")
+            except Exception as exc:
+                print(f"[{self.name}][{report_name}] error generando xlsx: {exc}")
+                s3_xlsx_key = ""
+
+            # mover json a s3/tls/reports/processed/
+            s3_processed_key = f"tls/reports/processed/{json_filename}"
+            try:
+                copy_file_in_s3(s3_json_key, s3_processed_key)
+                delete_file_from_s3(s3_json_key)
+                print(f"[{self.name}][{report_name}] json movido a processed/")
+            except Exception as exc:
+                print(f"[{self.name}][{report_name}] aviso al mover json: {exc}")
+
+            results.append({
+                "source": self.name,
+                "report": report_name,
+                "status": "success",
+                "count": count,
+                "total": report_data["total"],
+                "s3_json": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_processed_key}",
+                "s3_xlsx": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_xlsx_key}" if s3_xlsx_key else "",
+            })
+
+        return results
 
 if __name__ == "__main__":
     async def test():

@@ -4,6 +4,7 @@ from typing import Any, List, Optional, Dict
 from playwright.async_api import async_playwright
 from app.common.base_scraper import BaseScraper
 from app.core.config import settings
+from app.common.s3_utils import upload_file_to_s3
 import json
 import httpx
 from datetime import datetime
@@ -151,16 +152,21 @@ class MVTScraper(BaseScraper):
                 return {"data": all_data, "count": total_count or len(all_data)}
 
     def save_data(self, data: Any, start_date: str, end_date: str) -> str:
-        """guarda el json en la carpeta data por el momento"""
+        """guarda el json en disco y lo sube a s3"""
         timestamp = datetime.now().strftime("%H%M%S")
         s_tag = start_date.replace("-", "")
         e_tag = end_date.replace("-", "")
         filename = f"{self.name.lower()}_reporte_{s_tag}_{e_tag}_{timestamp}.json"
         filepath = os.path.join(self.data_dir, filename)
-        
+
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
-        
+
+        # subir a s3
+        s3_key = f"tls/reports/{filename}"
+        with open(filepath, "rb") as f:
+            upload_file_to_s3(f.read(), s3_key)
+
         return filepath
 
     async def scrape(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Any]:
