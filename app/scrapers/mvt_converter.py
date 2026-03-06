@@ -37,7 +37,7 @@ MVT_HEADERS = [
 
 def _map_mvt_row(item: Dict) -> Dict:
     return {
-        "ID":                item.get("id", ""),
+        "ID":                str(item.get("id", "")),
         "Origen de Cliente": item.get("origen", ""),
         "Local":             item.get("tienda", ""),
         "Fecha Registro":    item.get("fecha_hora_registro", ""),
@@ -45,10 +45,10 @@ def _map_mvt_row(item: Dict) -> Dict:
         "Saldo":             item.get("tipo_saldo", ""),
         "Proveedor":         item.get("proveedor_nombre", ""),
         "IP-TX":             item.get("direccion_ip", ""),
-        "ID-TX":             item.get("txn_id", ""),
-        "WEB-ID":            item.get("web_id", ""),
-        "OPERATION-ID":      item.get("operation_id", ""),
-        "PLAYER-ID":         item.get("player_id", ""),
+        "ID-TX":             str(item.get("txn_id", "")),
+        "WEB-ID":            str(item.get("web_id", "")),
+        "OPERATION-ID":      str(item.get("operation_id", "")),
+        "PLAYER-ID":         str(item.get("player_id", "")),
         "Tipo Documento":    item.get("tipo_doc", ""),
         "Numero Documento":  item.get("num_doc", ""),
         "Cliente":           item.get("cliente", ""),

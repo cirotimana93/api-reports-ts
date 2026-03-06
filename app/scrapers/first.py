@@ -20,7 +20,7 @@ class FIRSTScraper(BaseScraper):
         self.declinedbets_url = "https://bo.firstsports.tech/api/auth/reports/declinedbets"
 
     async def get_auth_info(self) -> Optional[Dict]:
-        """login completo: auth0 -> seleccion de corporativo -> captura token hs256"""
+        # login completo: auth0 -> seleccion de corporativo -> captura token hs256
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
@@ -170,11 +170,12 @@ class FIRSTScraper(BaseScraper):
                 await browser.close()
 
     async def _fetch_report(self, auth_info: Dict, url: str, base_payload: Dict, label: str) -> Any:
-        """metodo generico de extraccion con paginacion para cualquier endpoint de first"""
+        # extraccion con paginacion y reintentos para manejar timeouts
         all_data = []
         page = 1
-        limit = 500
+        limit = 1500 ## probar con 500 si rompe 
         total_records = 0
+        max_retries = 3
 
         headers = {
             "x-access-token": auth_info["token"],
@@ -191,26 +192,36 @@ class FIRSTScraper(BaseScraper):
         async with httpx.AsyncClient() as client:
             while True:
                 payload = {**base_payload, "pageNumber": page, "pageSize": limit}
+                success = False
 
-                print(f"[{self.name}][{label}] extrayendo pagina {page}...")
-                response = await client.post(url, json=payload, headers=headers, timeout=60.0)
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        if attempt > 1:
+                            print(f"[{self.name}][{label}] reintento {attempt}/{max_retries}...")
+                            await asyncio.sleep(2 * attempt)
+                        
+                        print(f"[{self.name}][{label}] extrayendo pagina {page}...")
+                        response = await client.post(url, json=payload, headers=headers, timeout=90.0)
 
-                if response.status_code != 200:
-                    print(f"[{self.name}][{label}] error en api (pagina {page}): {response.status_code}")
-                    break
+                        if response.status_code == 200:
+                            result = response.json()
+                            data_obj = result.get("data", {})
+                            if not data_obj:
+                                success = True
+                                break
 
-                result = response.json()
-                data_obj = result.get("data", {})
-                if not data_obj:
-                    break
+                            page_data = data_obj.get("list", [])
+                            total_records = data_obj.get("total", 0)
+                            all_data.extend(page_data)
+                            print(f"[{self.name}][{label}] progreso: {len(all_data)} / {total_records}")
+                            success = True
+                            break
+                        else:
+                            print(f"[{self.name}][{label}] error en api {response.status_code} (intento {attempt})")
+                    except Exception as e:
+                        print(f"[{self.name}][{label}] excepcion en api: {e} (intento {attempt})")
 
-                page_data = data_obj.get("list", [])
-                total_records = data_obj.get("total", 0)
-
-                all_data.extend(page_data)
-                print(f"[{self.name}][{label}] progreso: {len(all_data)} / {total_records}")
-
-                if len(all_data) >= total_records or not page_data:
+                if not success or (len(all_data) >= total_records or not page_data if 'page_data' in locals() else True):
                     break
 
                 page += 1
@@ -219,7 +230,7 @@ class FIRSTScraper(BaseScraper):
         return {"data": all_data, "total": total_records}
 
     async def _fetch_openbets_data(self, auth_info: Dict, start_date: str, end_date: str) -> Any:
-        """payload para openbets"""
+        # payload para apuestas abiertas
         from_iso = f"{start_date}T05:00:00.000000Z"
         end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
         to_iso = f"{end_dt.strftime('%Y-%m-%d')}T04:59:59.999999Z"
@@ -244,7 +255,7 @@ class FIRSTScraper(BaseScraper):
         return await self._fetch_report(auth_info, self.api_url, payload, "openbets")
 
     async def _fetch_bethistory_data(self, auth_info: Dict, start_date: str, end_date: str) -> Any:
-        """payload para bethistory"""
+        # payload para historial de apuestas
         from_iso = f"{start_date}T05:00:00.000000Z"
         end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
         to_iso = f"{end_dt.strftime('%Y-%m-%d')}T04:59:59.999999Z"
@@ -269,32 +280,15 @@ class FIRSTScraper(BaseScraper):
         }
         return await self._fetch_report(auth_info, self.bethistory_url, payload, "bethistory")
 
-    async def _fetch_declinedbets_data(self, auth_info: Dict, start_date: str, end_date: str) -> Any:
-        """payload para declinedbets"""
-        from_iso = f"{start_date}T05:00:00.000000Z"
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
-        to_iso = f"{end_dt.strftime('%Y-%m-%d')}T04:59:59.999999Z"
-        payload = {
-            "orderBy": "CreationDate", "orderDirection": "DESC",
-            "from": from_iso, "to": to_iso,
-            "customerID": "", "username": "", "fullName": "", "merchantCustomerCode": "",
-            "declinedDetails": "", "testAccount": -1,
-            "brands": [], "corporates": [], "currencies": [],
-            "declinedDetailID": [], "declinedReasonID": [], "declinedTypes": [],
-            "eventTypes": [], "events": [], "leagues": [], "operators": [], "sports": []
-        }
-        return await self._fetch_report(auth_info, self.declinedbets_url, payload, "declinedbets")
-
-
     async def scrape(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Any]:
-        """flujo principal: login, extraccion de 3 reportes y guardado en s3"""
+        # flujo principal con descarga de reportes requeridos
         today = datetime.now().strftime("%Y-%m-%d")
         s_date = start_date if start_date else today
         e_date = end_date if end_date else today
 
         print(f"fechas enviadas: {s_date} - {e_date}")
 
-        # validacion de fechas
+        # validacion basica de fechas
         try:
             if datetime.strptime(s_date, "%Y-%m-%d") > datetime.strptime(e_date, "%Y-%m-%d"):
                 print(f"[{self.name}] fecha inicio mayor a fecha fin")
@@ -311,66 +305,66 @@ class FIRSTScraper(BaseScraper):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         results = []
 
-        # definir los 3 reportes a extraer
+        # se excluye declinedbets por solicitud del usuario
         reports = [
             ("openbets",     self._fetch_openbets_data),
             ("bethistory",   self._fetch_bethistory_data),
-            ("declinedbets", self._fetch_declinedbets_data),
         ]
 
         for report_name, fetch_fn in reports:
-            print(f"\n[{self.name}] iniciando reporte: {report_name}")
-            report_data = await fetch_fn(auth_info, s_date, e_date)
-            count = len(report_data["data"])
+            try:
+                print(f"\n[{self.name}] iniciando reporte: {report_name}")
+                report_data = await fetch_fn(auth_info, s_date, e_date)
+                
+                if not report_data or "data" not in report_data:
+                    print(f"[{self.name}][{report_name}] fallo la extraccion")
+                    results.append({"source": self.name, "report": report_name, "status": "error", "message": "error en extraccion"})
+                    continue
 
-            if not count:
-                print(f"[{self.name}][{report_name}] sin datos")
+                count = len(report_data["data"])
+                if not count:
+                    print(f"[{self.name}][{report_name}] sin datos encontrados")
+                    results.append({"source": self.name, "report": report_name, "status": "success", "message": "sin datos", "count": 0})
+                    continue
+
+                # guardar en s3
+                json_filename = f"{self.name.lower()}_{report_name}_{s_date.replace('-','')}_{e_date.replace('-','')}_{timestamp}.json"
+                json_bytes = json.dumps(report_data, indent=4, ensure_ascii=False).encode("utf-8")
+                s3_json_key = f"tls/reports/{json_filename}"
+                upload_file_to_s3(json_bytes, s3_json_key)
+                print(f"[{self.name}][{report_name}] json subido: {s3_json_key}")
+
+                # conversion y subida de excel
+                try:
+                    xlsx_bytes = convert_first_report(report_name, report_data["data"])
+                    xlsx_filename = json_filename.replace(".json", ".xlsx")
+                    s3_xlsx_key = f"tls/reports/{xlsx_filename}"
+                    upload_file_to_s3(xlsx_bytes, s3_xlsx_key)
+                    print(f"[{self.name}][{report_name}] xlsx subido: {s3_xlsx_key}")
+                except Exception as exc:
+                    print(f"[{self.name}][{report_name}] error generando xlsx: {exc}")
+                    s3_xlsx_key = ""
+
+                # mover a procesados
+                s3_processed_key = f"tls/reports/processed/{json_filename}"
+                try:
+                    copy_file_in_s3(s3_json_key, s3_processed_key)
+                    delete_file_from_s3(s3_json_key)
+                except Exception as exc:
+                    print(f"[{self.name}][{report_name}] aviso al mover json: {exc}")
+
                 results.append({
                     "source": self.name,
                     "report": report_name,
                     "status": "success",
-                    "message": "sin datos",
-                    "count": 0
+                    "count": count,
+                    "total": report_data.get("total", 0),
+                    "s3_json": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_processed_key}",
+                    "s3_xlsx": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_xlsx_key}" if s3_xlsx_key else "",
                 })
-                continue
-
-            # serializar json en memoria y subir directo a s3
-            json_filename = f"{self.name.lower()}_{report_name}_{s_date.replace('-','')}_{e_date.replace('-','')}_{timestamp}.json"
-            json_bytes = json.dumps(report_data, indent=4, ensure_ascii=False).encode("utf-8")
-
-            s3_json_key = f"tls/reports/{json_filename}"
-            upload_file_to_s3(json_bytes, s3_json_key)
-            print(f"[{self.name}][{report_name}] json subido: {s3_json_key}")
-
-            # convertir json -> xlsx y subir a s3/tls/reports/
-            try:
-                xlsx_bytes = convert_first_report(report_name, report_data["data"])
-                xlsx_filename = json_filename.replace(".json", ".xlsx")
-                s3_xlsx_key = f"tls/reports/{xlsx_filename}"
-                upload_file_to_s3(xlsx_bytes, s3_xlsx_key)
-                print(f"[{self.name}][{report_name}] xlsx subido: {s3_xlsx_key}")
-            except Exception as exc:
-                print(f"[{self.name}][{report_name}] error generando xlsx: {exc}")
-                s3_xlsx_key = ""
-
-            # mover json a s3/tls/reports/processed/
-            s3_processed_key = f"tls/reports/processed/{json_filename}"
-            try:
-                copy_file_in_s3(s3_json_key, s3_processed_key)
-                delete_file_from_s3(s3_json_key)
-                print(f"[{self.name}][{report_name}] json movido a processed/")
-            except Exception as exc:
-                print(f"[{self.name}][{report_name}] aviso al mover json: {exc}")
-
-            results.append({
-                "source": self.name,
-                "report": report_name,
-                "status": "success",
-                "count": count,
-                "total": report_data["total"],
-                "s3_json": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_processed_key}",
-                "s3_xlsx": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_xlsx_key}" if s3_xlsx_key else "",
-            })
+            except Exception as e:
+                print(f"[{self.name}] error grave en reporte {report_name}: {e}")
+                results.append({"source": self.name, "report": report_name, "status": "error", "message": str(e)})
 
         return results
 

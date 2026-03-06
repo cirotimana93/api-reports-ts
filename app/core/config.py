@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     GRAPH_CLIENT_SECRET: str = ""
     GRAPH_TENANT_ID: str = ""
 
+    # correos
+    GRAPH_EMAIL_FROM: str = ""
+    GRAPH_EMAIL_TO: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
 settings = Settings()

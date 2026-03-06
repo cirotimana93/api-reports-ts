@@ -132,8 +132,8 @@ def _map_vgr_row(ticket: Dict) -> Dict:
 
     return {
         "Date,Time":      _fmt_datetime(ticket.get("timeRegister", ""), tz),
-        "Ticket ID":      ticket.get("ticketId", ""),
-        "Parent ID":      ticket.get("parentTicketId") or "",
+        "Ticket ID":      str(ticket.get("ticketId", "")),
+        "Parent ID":      str(ticket.get("parentTicketId") or ""),
         "Is test":        _bool_str(advanced.get("testMode")),
         "Printed":        str(ticket.get("timePrint") is not None).upper(),
         "Issued from":    _unit_label(unit),

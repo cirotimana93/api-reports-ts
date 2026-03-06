@@ -103,7 +103,7 @@ class LottingoScraper(BaseScraper):
             return {"s3_key": s3_key, "size_bytes": content_length}
 
     async def scrape(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Any]:
-        """flujo principal: login, descarga del excel directo a s3"""
+        # flujo principal con reintentos para manejar fallos de red
         today = datetime.now().strftime("%Y-%m-%d")
         s_date = start_date if start_date else today
         e_date = end_date if end_date else today
@@ -119,21 +119,42 @@ class LottingoScraper(BaseScraper):
             print(f"[{self.name}] formato de fecha invalido")
             return [{"source": self.name, "status": "error", "message": "formato invalido"}]
 
-        auth_info = await self.get_auth_info()
-        if not auth_info:
-            return [{"source": self.name, "status": "error", "message": "error de autenticacion"}]
+        max_retries = 3
+        last_error = ""
 
-        result = await self._download_excel(auth_info, s_date, e_date)
+        for attempt in range(1, max_retries + 1):
+            try:
+                if attempt > 1:
+                    wait_time = attempt * 5
+                    print(f"[{self.name}] reintento {attempt}/{max_retries} en {wait_time}s...")
+                    await asyncio.sleep(wait_time)
 
-        if not result:
-            return [{"source": self.name, "status": "error", "message": "error al descargar el excel"}]
+                auth_info = await self.get_auth_info()
+                if not auth_info:
+                    last_error = "error de autenticacion"
+                    continue
 
-        return [{
-            "source": self.name,
-            "status": "success",
-            "s3_key": result["s3_key"],
-            "size_bytes": result["size_bytes"]
-        }]
+                result = await self._download_excel(auth_info, s_date, e_date)
+                if not result:
+                    last_error = "error al descargar el excel"
+                    continue
+
+                return [{
+                    "source": self.name,
+                    "status": "success",
+                    "s3_key": result["s3_key"],
+                    "size_bytes": result["size_bytes"]
+                }]
+
+            except Exception as e:
+                last_error = str(e)
+                print(f"[{self.name}] error en intento {attempt}: {e}")
+                if "connection" in last_error.lower() or "timeout" in last_error.lower() or "failed" in last_error.lower():
+                    continue
+                else:
+                    break
+
+        return [{"source": self.name, "status": "error", "message": f"fallo tras {max_retries} intentos. ultimo error: {last_error}"}]
 
 if __name__ == "__main__":
     async def test():

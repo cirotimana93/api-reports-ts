@@ -97,8 +97,8 @@ def _map_bethistory_row(purchase: Dict) -> Dict:
     settlement = purchase.get("settlementHistory", {})
 
     row = {
-        "Purchase_ID":            purchase.get("purchaseID", ""),
-        "Bets_BetID":             bet.get("betID", ""),
+        "Purchase_ID":            str(purchase.get("purchaseID", "")),
+        "Bets_BetID":             str(bet.get("betID", "")),
         "Bet_Type":               _bet_type_name(bet.get("betTypeID", 1)),
         "Bet_Date_And_Time":      _utc_to_local(purchase.get("creationDate", "")),
         "Customer_ID":            customer.get("customerID", ""),
@@ -214,8 +214,8 @@ def _map_openbets_row(purchase: Dict) -> Dict:
 
     # enhanced winning part para possible winnings del openbets viene de possibleWinnings a nivel purchase
     row = {
-        "Purchase_ID":                purchase.get("purchaseID", ""),
-        "Bets_BetID":                 bet.get("betID", ""),
+        "Purchase_ID":                str(purchase.get("purchaseID", "")),
+        "Bets_BetID":                 str(bet.get("betID", "")),
         "Rate":                       purchase.get("rateUSD", ""),
         "Currency":                   purchase.get("currencyCode", ""),
         "Odds_Style":                 _ODDS_MAP.get(purchase.get("oddStyleID", 1), "Decimal"),
@@ -329,8 +329,8 @@ def _map_declinedbets_row(purchase: Dict) -> Dict:
     stake_d = bet.get("stakeDecimal", {})
 
     row = {
-        "Purchase_ID":            purchase.get("purchaseID", ""),
-        "Declined_Bets_ID":       bet.get("betID", ""),
+        "Purchase_ID":            str(purchase.get("purchaseID", "")),
+        "Declined_Bets_ID":       str(bet.get("betID", "")),
         "Bet_Type":               bet.get("betTypeID", 1),
         "Bet_Date_And_Time":      _utc_to_local(purchase.get("creationDate", "")),
         "Customer_ID":            customer.get("customerID", ""),

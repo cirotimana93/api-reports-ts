@@ -1,94 +1,63 @@
 import base64
-import requests
+import httpx
+from typing import List, Optional
 from app.core.config import settings
-from msal import ConfidentialClientApplication
 
-
-
-def sendMailOffice365(remitente, asunto, mensajeBody, destinatarios, archivos_adjuntos=None):
-    try:
-        # configuracion
-        client_id = settings.GRAPH_CLIENT_ID
-        client_secret = settings.GRAPH_CLIENT_SECRET
-        tenant_id = settings.GRAPH_TENANT_ID
-        sender_email = remitente
+async def sendMailOffice365(subject: str, content: str, to_recipients: List[str], attachment_content: Optional[bytes] = None, attachment_name: Optional[str] = None):
+    # obtener token de acceso de ms graph
+    token_url = f"https://login.microsoftonline.com/{settings.GRAPH_TENANT_ID}/oauth2/v2.0/token"
+    token_data = {
+        "client_id": settings.GRAPH_CLIENT_ID,
+        "scope": "https://graph.microsoft.com/.default",
+        "client_secret": settings.GRAPH_CLIENT_SECRET,
+        "grant_type": "client_credentials",
+    }
+    
+    async with httpx.AsyncClient() as client:
+        # solicitar token
+        token_res = await client.post(token_url, data=token_data)
+        if token_res.status_code != 200:
+            print(f"[mail] error obteniendo token: {token_res.text}")
+            return False
         
-        if not all([client_id, client_secret, tenant_id, sender_email]):
-            raise Exception("Configuración de Graph API incompleta para envío de correos")
+        access_token = token_res.json().get("access_token")
         
-        # autenticacion
-        app = ConfidentialClientApplication(
-            client_id=client_id,
-            client_credential=client_secret,
-            authority=f"https://login.microsoftonline.com/{tenant_id}"
-        )
+        # construir mensaje
+        recipients = [{"emailAddress": {"address": email.strip()}} for email in to_recipients]
         
-        result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
-        
-        if "access_token" not in result:
-            raise Exception(f"Error obteniendo token: {result.get('error_description')}")
-        
-        token = result["access_token"]
-        
-        # preparar destinatarios
-        to_recipients = [{"emailAddress": {"address": email.strip()}} for email in destinatarios]
-        
-        # preparar adjuntos
-        attachments = []
-        if archivos_adjuntos:
-            for archivo in archivos_adjuntos:
-                if isinstance(archivo, tuple):
-                    # (filename, content)
-                    filename, content = archivo
-                    if isinstance(content, str):
-                        content = content.encode('utf-8')
-                    attachment_data = {
-                        "@odata.type": "#microsoft.graph.fileAttachment",
-                        "name": filename,
-                        "contentBytes": base64.b64encode(content).decode('utf-8')
-                    }
-                    attachments.append(attachment_data)
-                else:
-                    # Ruta de archivo
-                    with open(archivo, 'rb') as f:
-                        content = f.read()
-                    attachment_data = {
-                        "@odata.type": "#microsoft.graph.fileAttachment",
-                        "name": os.path.basename(archivo),
-                        "contentBytes": base64.b64encode(content).decode('utf-8')
-                    }
-                    attachments.append(attachment_data)
-        
-        # preparar mensaje
-        message = {
-            "subject": asunto,
-            "body": {
-                "contentType": "HTML",
-                "content": mensajeBody
-            },
-            "toRecipients": to_recipients
+        email_body = {
+            "message": {
+                "subject": subject,
+                "body": {
+                    "contentType": "HTML",
+                    "content": content
+                },
+                "toRecipients": recipients,
+            }
         }
         
-        if attachments:
-            message["attachments"] = attachments
+        # agregar adjunto si existe
+        if attachment_content and attachment_name:
+            encoded_content = base64.b64encode(attachment_content).decode("utf-8")
+            email_body["message"]["attachments"] = [
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": attachment_name,
+                    "contentBytes": encoded_content
+                }
+            ]
+            
+        send_url = f"https://graph.microsoft.com/v1.0/users/{settings.GRAPH_EMAIL_FROM}/sendMail"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
         
         # enviar correo
-        headers = {
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/json'
-        }
-        
-        url = f"https://graph.microsoft.com/v1.0/users/{sender_email}/sendMail"
-        payload = {"message": message}
-        
-        response = requests.post(url, headers=headers, json=payload)
-        
-        if response.status_code == 202:
-            print(f"Correo enviado exitosamente a: {', '.join(destinatarios)}")
-            return True
-        else:
-            raise Exception(f"Error enviando correo: {response.status_code} - {response.text}")
+        send_res = await client.post(send_url, json=email_body, headers=headers)
+        if send_res.status_code not in [200, 202]:
+            print(f"[mail] error enviando correo: {send_res.text}")
+            return False
             
-    except Exception as e:
-        print(f"Error en sendMailOffice365: {str(e)}")
-        return False
+        print(f"[mail] correo enviado exitosamente a {to_recipients}")
+        return True

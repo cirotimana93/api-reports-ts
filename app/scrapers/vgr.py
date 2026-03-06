@@ -107,7 +107,7 @@ class VGRScraper(BaseScraper):
 
         all_data = []
         offset = 0
-        page_size = 500
+        page_size = 1000
         total_records = None
 
         headers = {

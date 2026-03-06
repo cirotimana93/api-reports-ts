@@ -114,7 +114,6 @@ class MVTScraper(BaseScraper):
                         "busqueda_fecha_fin": e_date,
                         "cargo_id": "19",
                         "usuario_id": "4595",
-                        "tipo_saldo": "1",
                         "page": str(page),
                         "limit": str(limit)
                     }

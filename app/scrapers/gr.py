@@ -168,7 +168,7 @@ class GRScraper(BaseScraper):
         }
 
     async def scrape(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Any]:
-        """flujo principal: login, extraccion y guardado de datos"""
+        # flujo principal con reintentos para manejar fallos de red o captura de token
         today = datetime.now().strftime("%Y-%m-%d")
         s_date = start_date if start_date else today
         e_date = end_date if end_date else today
@@ -184,18 +184,39 @@ class GRScraper(BaseScraper):
             print(f"[{self.name}] formato de fecha invalido")
             return [{"source": self.name, "status": "error", "message": "formato invalido"}]
 
-        auth_info = await self.get_auth_info()
-        if not auth_info:
-            return [{"source": self.name, "status": "error", "message": "error de autenticacion"}]
+        max_retries = 3
+        last_error = ""
 
-        report_data = await self._fetch_api_data(auth_info, s_date, e_date)
+        for attempt in range(1, max_retries + 1):
+            try:
+                if attempt > 1:
+                    wait_time = attempt * 5
+                    print(f"[{self.name}] reintento {attempt}/{max_retries} en {wait_time}s...")
+                    await asyncio.sleep(wait_time)
 
-        if not report_data["data"]:
-            print(f"[{self.name}] no se encontraron registros")
-            return [{"source": self.name, "status": "success", "message": "sin datos", "count": 0}]
+                auth_info = await self.get_auth_info()
+                if not auth_info:
+                    last_error = "error de autenticacion"
+                    continue
 
-        items = report_data.get("data", [])
-        count = len(items)
+                report_data = await self._fetch_api_data(auth_info, s_date, e_date)
+
+                if not report_data["data"]:
+                    print(f"[{self.name}] no se encontraron registros")
+                    return [{"source": self.name, "status": "success", "message": "sin datos", "count": 0}]
+
+                items = report_data.get("data", [])
+                count = len(items)
+                break # exito, salir del bucle de reintentos
+            except Exception as e:
+                last_error = str(e)
+                print(f"[{self.name}] error en intento {attempt}: {e}")
+                if attempt == max_retries:
+                    return [{"source": self.name, "status": "error", "message": f"fallo tras {max_retries} intentos: {last_error}"}]
+                continue
+        
+        if not auth_info or not report_data:
+             return [{"source": self.name, "status": "error", "message": f"fallo tras {max_retries} intentos: {last_error}"}]
 
         # serializar json en memoria y subir directo a s3
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
