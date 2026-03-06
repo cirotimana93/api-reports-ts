@@ -15,12 +15,6 @@ class LottingoScraper(BaseScraper):
         self.username = settings.LOT_USER
         self.password = settings.LOT_PASS
         self.report_url = "https://gestion.apuestatotal.com/fastreport/bingos/"
-        self.data_dir = "data"
-
-        # crear carpeta de datos si no existe
-        if not os.path.exists(self.data_dir):
-            os.makedirs(self.data_dir)
-
     async def get_auth_info(self) -> Optional[Dict]:
         """login en lottingo y captura las cookies de sesion"""
         async with async_playwright() as p:
@@ -64,7 +58,7 @@ class LottingoScraper(BaseScraper):
                 await browser.close()
 
     async def _download_excel(self, auth_info: Dict, start_date: str, end_date: str) -> Any:
-        """descarga el excel via get con redireccion y lo guarda en disco"""
+        """descarga el excel via get con redireccion y lo sube directamente a s3/tls/reports/"""
         # el servidor espera fecha_fin como el dia siguiente
         end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
         fecha_fin_param = end_dt.strftime("%Y-%m-%d")
@@ -98,25 +92,18 @@ class LottingoScraper(BaseScraper):
             content_length = len(response.content)
             print(f"[{self.name}] descarga exitosa. content-type: {content_type}, bytes: {content_length}")
 
-            # construir nombre del archivo
+            # construir nombre del archivo para s3
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{self.name.lower()}_reporte_{start_date.replace('-','')}_{end_date.replace('-','')}_{timestamp}.xls"
-            filepath = os.path.join(self.data_dir, filename)
-
-            # guardar el archivo binario en local
-            with open(filepath, "wb") as f:
-                f.write(response.content)
-
-            print(f"[{self.name}] archivo guardado en: {filepath}")
 
             # subir a s3
             s3_key = f"tls/reports/{filename}"
             upload_file_to_s3(response.content, s3_key)
 
-            return {"filepath": filepath, "size_bytes": content_length}
+            return {"s3_key": s3_key, "size_bytes": content_length}
 
     async def scrape(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Any]:
-        """flujo principal: login, descarga del excel y guardado"""
+        """flujo principal: login, descarga del excel directo a s3"""
         today = datetime.now().strftime("%Y-%m-%d")
         s_date = start_date if start_date else today
         e_date = end_date if end_date else today
@@ -144,7 +131,7 @@ class LottingoScraper(BaseScraper):
         return [{
             "source": self.name,
             "status": "success",
-            "file": result["filepath"],
+            "s3_key": result["s3_key"],
             "size_bytes": result["size_bytes"]
         }]
 

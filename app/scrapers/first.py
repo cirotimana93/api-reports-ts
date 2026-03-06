@@ -18,11 +18,6 @@ class FIRSTScraper(BaseScraper):
         self.api_url = "https://bo.firstsports.tech/api/auth/reports/openbets"
         self.bethistory_url = "https://bo.firstsports.tech/api/auth/reports/bethistory"
         self.declinedbets_url = "https://bo.firstsports.tech/api/auth/reports/declinedbets"
-        self.data_dir = "data"
-        
-        # crear carpeta de datos si no existe
-        if not os.path.exists(self.data_dir):
-            os.makedirs(self.data_dir)
 
     async def get_auth_info(self) -> Optional[Dict]:
         """login completo: auth0 -> seleccion de corporativo -> captura token hs256"""
@@ -339,19 +334,12 @@ class FIRSTScraper(BaseScraper):
                 })
                 continue
 
-            # guardar json temporal en disco
+            # serializar json en memoria y subir directo a s3
             json_filename = f"{self.name.lower()}_{report_name}_{s_date.replace('-','')}_{e_date.replace('-','')}_{timestamp}.json"
-            json_filepath = os.path.join(self.data_dir, json_filename)
+            json_bytes = json.dumps(report_data, indent=4, ensure_ascii=False).encode("utf-8")
 
-            with open(json_filepath, "w", encoding="utf-8") as f:
-                json.dump(report_data, f, indent=4, ensure_ascii=False)
-
-            print(f"[{self.name}][{report_name}] {count} registros guardados en: {json_filepath}")
-
-            # subir json original a s3/tls/reports/
             s3_json_key = f"tls/reports/{json_filename}"
-            with open(json_filepath, "rb") as f:
-                upload_file_to_s3(f.read(), s3_json_key)
+            upload_file_to_s3(json_bytes, s3_json_key)
             print(f"[{self.name}][{report_name}] json subido: {s3_json_key}")
 
             # convertir json -> xlsx y subir a s3/tls/reports/

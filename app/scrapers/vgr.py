@@ -6,8 +6,9 @@ from datetime import datetime, timedelta
 from typing import Any, List, Optional, Dict
 from playwright.async_api import async_playwright
 from app.common.base_scraper import BaseScraper
-from app.common.s3_utils import upload_file_to_s3
+from app.common.s3_utils import upload_file_to_s3, delete_file_from_s3, copy_file_in_s3
 from app.core.config import settings
+from app.scrapers.vgr_converter import json_to_excel_vgr
 
 class VGRScraper(BaseScraper):
     def __init__(self):
@@ -17,11 +18,6 @@ class VGRScraper(BaseScraper):
         self.password = settings.VGR_PASS
         self.api_url = "https://america-manager.virtustec.com/manager/manager-api-ws/api/manager/v0.1/ticket/find"
         self.entity_id = "1776922"
-        self.data_dir = "data"
-
-        # crear carpeta de datos si no existe
-        if not os.path.exists(self.data_dir):
-            os.makedirs(self.data_dir)
 
     async def get_auth_info(self) -> Optional[Dict]:
         """login en vgr y captura el bearer token desde los headers de las peticiones al api"""
@@ -199,40 +195,45 @@ class VGRScraper(BaseScraper):
             print(f"[{self.name}] no se encontraron registros")
             return [{"source": self.name, "status": "success", "message": "sin datos", "count": 0}]
 
-        # guardar json en disco
+        items = report_data.get("data", [])
+        count = len(items)
+
+        # serializar json en memoria y subir directo a s3
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{self.name.lower()}_reporte_{s_date.replace('-','')}_{e_date.replace('-','')}_{timestamp}.json"
-        filepath = os.path.join(self.data_dir, filename)
+        json_filename = f"{self.name.lower()}_reporte_{s_date.replace('-','')}_{e_date.replace('-','')}_{timestamp}.json"
+        json_bytes = json.dumps(report_data, indent=4, ensure_ascii=False).encode("utf-8")
 
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(report_data, f, indent=4, ensure_ascii=False)
+        s3_json_key = f"tls/reports/{json_filename}"
+        upload_file_to_s3(json_bytes, s3_json_key)
+        print(f"[{self.name}] json subido: {s3_json_key}")
 
-        print(f"[{self.name}] datos guardados en: {filepath}")
+        # convertir json -> xlsx y subir a s3/tls/reports/
+        try:
+            xlsx_bytes = json_to_excel_vgr(items)
+            xlsx_filename = json_filename.replace(".json", ".xlsx")
+            s3_xlsx_key = f"tls/reports/{xlsx_filename}"
+            upload_file_to_s3(xlsx_bytes, s3_xlsx_key)
+            print(f"[{self.name}] xlsx subido: {s3_xlsx_key}")
+        except Exception as exc:
+            print(f"[{self.name}] error generando xlsx: {exc}")
+            s3_xlsx_key = ""
 
-        # subir a s3
-        s3_key = f"tls/reports/{filename}"
-        with open(filepath, "rb") as f:
-            upload_file_to_s3(f.read(), s3_key)
-
-
-        # resumen en consola
-        items = report_data["data"]
-        print(f"\n[{self.name}] resumen de los primeros 5 registros:")
-        for i, item in enumerate(items[:5]):
-            ticket_id = item.get("ticketId", "n/a")
-            status = item.get("status", "n/a")
-            stake = item.get("stake", 0)
-            currency = item.get("currency", {}).get("code", "")
-            user = item.get("unit", {}).get("name", "n/a")
-            registered = item.get("timeRegister", "n/a")
-            print(f"{i+1}. ID: {ticket_id} | Estado: {status} | Monto: {stake} {currency} | Usuario: {user} | Fecha: {registered}")
+        # mover json a s3/tls/reports/processed/
+        s3_processed_key = f"tls/reports/processed/{json_filename}"
+        try:
+            copy_file_in_s3(s3_json_key, s3_processed_key)
+            delete_file_from_s3(s3_json_key)
+            print(f"[{self.name}] json movido a processed/")
+        except Exception as exc:
+            print(f"[{self.name}] aviso al mover json: {exc}")
 
         return [{
             "source": self.name,
             "status": "success",
-            "file": filepath,
-            "count": len(items),
-            "total": report_data["total"]
+            "count": count,
+            "total": report_data["total"],
+            "s3_json": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_processed_key}",
+            "s3_xlsx": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_xlsx_key}" if s3_xlsx_key else "",
         }]
 
 if __name__ == "__main__":

@@ -4,7 +4,8 @@ from typing import Any, List, Optional, Dict
 from playwright.async_api import async_playwright
 from app.common.base_scraper import BaseScraper
 from app.core.config import settings
-from app.common.s3_utils import upload_file_to_s3
+from app.common.s3_utils import upload_file_to_s3, delete_file_from_s3, copy_file_in_s3
+from app.scrapers.mvt_converter import json_to_excel_mvt
 import json
 import httpx
 from datetime import datetime
@@ -15,11 +16,6 @@ class MVTScraper(BaseScraper):
         self.username = settings.MVT_USER
         self.password = settings.MVT_PASS
         self.api_url = "https://gddhbny0ul.execute-api.us-east-1.amazonaws.com/mvt-report/v1/telesales/transactions"
-        self.data_dir = "data"
-        
-        # asegurar que la carpeta data existe
-        if not os.path.exists(self.data_dir):
-            os.makedirs(self.data_dir)
 
     async def get_token(self) -> Optional[str]:
         """realiza el login y captura el token de acceso"""
@@ -151,23 +147,7 @@ class MVTScraper(BaseScraper):
                 print(f"[{self.name}] error consulta api: {str(e)}")
                 return {"data": all_data, "count": total_count or len(all_data)}
 
-    def save_data(self, data: Any, start_date: str, end_date: str) -> str:
-        """guarda el json en disco y lo sube a s3"""
-        timestamp = datetime.now().strftime("%H%M%S")
-        s_tag = start_date.replace("-", "")
-        e_tag = end_date.replace("-", "")
-        filename = f"{self.name.lower()}_reporte_{s_tag}_{e_tag}_{timestamp}.json"
-        filepath = os.path.join(self.data_dir, filename)
 
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-
-        # subir a s3
-        s3_key = f"tls/reports/{filename}"
-        with open(filepath, "rb") as f:
-            upload_file_to_s3(f.read(), s3_key)
-
-        return filepath
 
     async def scrape(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Any]:
         """flujo principal: login -> fetch -> save con rango de fechas"""
@@ -188,23 +168,48 @@ class MVTScraper(BaseScraper):
         if not report_data.get("data"):
             return [{"source": self.name, "status": "error", "message": "no se obtuvieron datos para el rango"}]
 
-        filepath = self.save_data(report_data, s_date, e_date)
-        print(f"[{self.name}] todos los datos ({len(report_data['data'])}) guardados en: {filepath}")
+        # serializar json en memoria y subir directo a s3
+        timestamp = datetime.now().strftime("%H%M%S")
+        s_tag = s_date.replace("-", "")
+        e_tag = e_date.replace("-", "")
+        json_filename = f"{self.name.lower()}_reporte_{s_tag}_{e_tag}_{timestamp}.json"
+        json_bytes = json.dumps(report_data, indent=4, ensure_ascii=False).encode("utf-8")
 
-        # mostrar los primeros 5 registros por consola para verificar
         items = report_data.get("data", [])
-        if items:
-            print(f"\n[{self.name}] primeros 5 registros:")
-            for i, item in enumerate(items[:5]):
-                print(f"--- registro {i+1} ---")
-                print(json.dumps(item, indent=2, ensure_ascii=False))
-        
+        count = len(items)
+
+        # subir json a s3/tls/reports/
+        s3_json_key = f"tls/reports/{json_filename}"
+        upload_file_to_s3(json_bytes, s3_json_key)
+        print(f"[{self.name}] json subido: {s3_json_key}")
+
+        # convertir json -> xlsx y subir a s3/tls/reports/
+        try:
+            xlsx_bytes = json_to_excel_mvt(items)
+            xlsx_filename = json_filename.replace(".json", ".xlsx")
+            s3_xlsx_key = f"tls/reports/{xlsx_filename}"
+            upload_file_to_s3(xlsx_bytes, s3_xlsx_key)
+            print(f"[{self.name}] xlsx subido: {s3_xlsx_key}")
+        except Exception as exc:
+            print(f"[{self.name}] error generando xlsx: {exc}")
+            s3_xlsx_key = ""
+
+        # mover json a s3/tls/reports/processed/
+        s3_processed_key = f"tls/reports/processed/{json_filename}"
+        try:
+            copy_file_in_s3(s3_json_key, s3_processed_key)
+            delete_file_from_s3(s3_json_key)
+            print(f"[{self.name}] json movido a processed/")
+        except Exception as exc:
+            print(f"[{self.name}] aviso al mover json: {exc}")
+
         return [{
-            "source": self.name, 
+            "source": self.name,
             "status": "success",
-            "file": filepath,
-            "count": len(items),
-            "total": report_data.get("count", 0)
+            "count": count,
+            "total": report_data.get("count", 0),
+            "s3_json": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_processed_key}",
+            "s3_xlsx": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_xlsx_key}" if s3_xlsx_key else "",
         }]
 
 if __name__ == "__main__":
