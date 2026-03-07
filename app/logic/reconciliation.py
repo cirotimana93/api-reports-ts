@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from app.common.s3_utils import read_file_from_s3, upload_file_to_s3, copy_file_in_s3, delete_file_from_s3, get_latest_file_from_s3
 from app.core.config import settings
+from app.logic.mail_formatter import format_reconciliation_email
 
 class ReconciliationService:
     def __init__(self):
@@ -269,39 +270,61 @@ class ReconciliationService:
                 else:
                     pd.DataFrame(columns=["ID-TX", "Resultado"]).to_excel(writer, sheet_name=sheet, index=False)
                 
-                # omitir estadisticas para la pestana especial de mvt no encontrados
-                if sheet == "MVT no encontrados": continue
+                # preparar datos para el correo formateado
+        email_summary_data = []
+        for prov_display, df_res in summary_dfs.items():
+            # para vgr/gr el filtro mvt_lookup tiene nombres especificos
+            mvt_prov_names = {
+                "First": ["First"],
+                "VGR": ["Virtual Golden Race"],
+                "GR": ["Golden Race", "MVT Golden Race"],
+                "Lottingo": ["Lottingo"]
+            }.get(prov_display, [prov_display])
+            
+            total_mvt_prov = 0
+            for name in mvt_prov_names:
+                prov_in_mvt = df_mvt_raw[df_mvt_raw['Proveedor'] == name]
+                total_mvt_prov += len(prov_in_mvt)
 
-                # calcular estadisticas para reporte en consola
-                missing = len(df_find[df_find['Tipo de Caso'].str.contains("ETAPA 01")]) if 'Tipo de Caso' in df_find.columns else 0
-                
-                total_prov = 0
-                if sheet == "First": total_prov = len(df_first) if 'df_first' in locals() else 0
-                elif sheet == "VGR": total_prov = len(df_vgr) if 'df_vgr' in locals() else 0
-                elif sheet == "GR": total_prov = len(df_gr) if 'df_gr' in locals() else 0
-                elif sheet == "Lottingo": total_prov = len(df_lot_filt) if 'df_lot_filt' in locals() else 0
-                
-                found_count = total_prov - missing
-                
-                prov_filter = {
-                    "First": ["First"],
-                    "VGR": ["Virtual Golden Race"],
-                    "GR": ["Golden Race", "MVT Golden Race"],
-                    "Lottingo": ["Lottingo"]
-                }.get(sheet, [])
-                mvt_rows = df_mvt_raw[df_mvt_raw['Proveedor'].isin(prov_filter)]
-                
-                sum_lines = [
-                    f"Total de operaciones en proveedor {sheet}: {total_prov}",
-                    f"Total de operaciones del proveedor {sheet} en MVT: {len(mvt_rows)}",
-                    f"Tx del proveedor {sheet} presentes en MVT: {found_count}",
-                    f"Tx del proveedor {sheet} no presentes en MVT: {missing}",
-                    "-" * 30 + "\n"
-                ]
-                
-                for line in sum_lines:
-                    print(line)
-                    console_summary += line + "\n"
+            total_prov = 0
+            if prov_display == "First": total_prov = len(df_first) if 'df_first' in locals() else 0
+            elif prov_display == "VGR": total_prov = len(df_vgr) if 'df_vgr' in locals() else 0
+            elif prov_display == "GR": total_prov = len(df_gr) if 'df_gr' in locals() else 0
+            elif prov_display == "Lottingo": total_prov = len(df_lot_filt) if 'df_lot_filt' in locals() else 0
+            
+            if prov_display == "MVT no encontrados":
+                # This sheet is for MVT entries not found in provider reports,
+                # not a provider report itself, so skip for this summary.
+                continue
+
+            missing = len(df_res[df_res['Tipo de Caso'].str.contains("ETAPA 01", na=False)]) if 'Tipo de Caso' in df_res.columns else 0
+            found_count = total_prov - missing
+
+            email_summary_data.append({
+                "proveedor": prov_display,
+                "total_prov": total_prov,
+                "total_mvt": total_mvt_prov,
+                "presentes": found_count,
+                "no_presentes": missing
+            })
+
+        # RE-FACTORIZACION: Usar los mismos strings de consola pero estructurados
+        console_summary = "*** resumen de conciliacion ***\n"
+        
+        for item in email_summary_data:
+            prov_display = item["proveedor"]
+            total_prov = item["total_prov"]
+            total_mvt_prov = item["total_mvt"]
+            tx_presentes = item["presentes"]
+            ausentes = item["no_presentes"]
+
+            console_summary += f"\nTotal de operaciones en proveedor {prov_display}: {total_prov}\n"
+            console_summary += f"Total de operaciones del proveedor {prov_display} en MVT: {total_mvt_prov}\n"
+            console_summary += f"Tx del proveedor {prov_display} presentes en MVT: {tx_presentes}\n"
+            console_summary += f"Tx del proveedor {prov_display} no presentes en MVT: {ausentes}\n"
+            console_summary += "-" * 30 + "\n"
+
+        print(console_summary)
 
         # captura de tiempo de fin
         end_time_dt = datetime.now()
@@ -321,11 +344,11 @@ class ReconciliationService:
             subject = f"Reporte de conciliacion - {datetime.now().strftime('%d/%m/%Y %H:%M')}"
             
             # construir cuerpo del correo con el resumen y tiempos
-            email_content = f"<p>Fecha de inicio de proceso: {start_time_str}</p>"
-            email_content += f"<p>Fecha de fin de proceso: {end_time_str}</p>"
-            email_content += "<h3>Resumen de Reportes</h3>"
-            email_content += "<pre>" + console_summary + "</pre>"
-            email_content += "<p>Se adjunta el reporte detallado en Excel.</p>"
+            email_content = format_reconciliation_email(
+                start_time=start_time_str,
+                end_time=end_time_str,
+                summary_data=email_summary_data
+            )
             
             await sendMailOffice365(
                 subject=subject,

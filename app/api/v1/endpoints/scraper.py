@@ -6,8 +6,16 @@ from app.scrapers.vgr import VGRScraper
 from app.scrapers.gr import GRScraper
 from app.scrapers.first import FIRSTScraper
 from app.scrapers.lottingo import LottingoScraper
+from app.logic.orchestrator import execute_full_reconciliation
 
 router = APIRouter()
+
+@router.post("/reconcile")
+async def trigger_reconciliation(start_date: str = None, end_date: str = None):
+    report_file = await execute_full_reconciliation(start_date, end_date)
+    if not report_file:
+        raise HTTPException(status_code=500, detail="error al ejecutar la conciliacion")
+    return {"message": "proceso completado", "report": report_file}
 
 @router.get("/mvt", response_model=List[ScraperResult])
 async def get_mvt_data():
