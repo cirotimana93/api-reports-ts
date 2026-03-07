@@ -8,12 +8,12 @@ async def scheduled_reconciliation():
     # Usamos la fecha de hoy para el proceso automatico
     today = datetime.now().strftime("%Y-%m-%d")
     
-    print(f"\n[CRON] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Iniciando proceso completo (Descarga + Conciliación)...")
+    print(f"\n[CRON] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Iniciando proceso completo (Descarga + Conciliacion)...")
     
     try:
         # ejecutamos el flujo completo (step 1 y step 2)
         await execute_full_reconciliation(start_date=today)
-        print(f"[CRON] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Proceso programado finalizado con éxito.")
+        print(f"[CRON] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Proceso programado finalizado con exito.")
     except Exception as e:
         print(f"[CRON] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ERROR en proceso programado: {e}")
 
@@ -36,7 +36,7 @@ async def daily_full_month_reconciliation():
     
     try:
         await execute_full_reconciliation(start_date=start_date, end_date=end_date)
-        print(f"[CRON DIARIO] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Finalizado con éxito.")
+        print(f"[CRON DIARIO] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Finalizado con exito.")
     except Exception as e:
         print(f"[CRON DIARIO] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ERROR: {e}")
 
