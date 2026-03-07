@@ -1,14 +1,17 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi_utilities import repeat_at
 from app.logic.orchestrator import execute_full_reconciliation
 import asyncio
 
+# definir zona horaria de lima (utc-5)
+LIMA_TZ = timezone(timedelta(hours=-5))
+
 @repeat_at(cron="0 */3 * * *")
 async def scheduled_reconciliation():
-    # Usamos la fecha de hoy para el proceso automatico
-    today = datetime.now().strftime("%Y-%m-%d")
+    # usamos la fecha de hoy en lima para el proceso automatico
+    today = datetime.now(LIMA_TZ).strftime("%Y-%m-%d")
     
-    print(f"\n[CRON] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Iniciando proceso completo (Descarga + Conciliacion)...")
+    print(f"\n[CRON] [{datetime.now(LIMA_TZ).strftime('%Y-%m-%d %H:%M:%S')}] Iniciando proceso completo...")
     
     try:
         # ejecutamos el flujo completo (step 1 y step 2)
@@ -19,7 +22,8 @@ async def scheduled_reconciliation():
 
 @repeat_at(cron="15 3 * * *")
 async def daily_full_month_reconciliation():
-    now = datetime.now()
+    # usamos la hora de lima
+    now = datetime.now(LIMA_TZ)
     
     if now.day == 1:
         # es el primer dia del mes, ejecutar todo el mes anterior
@@ -32,7 +36,7 @@ async def daily_full_month_reconciliation():
         start_date = now.replace(day=1).strftime("%Y-%m-%d")
         end_date = yesterday.strftime("%Y-%m-%d")
 
-    print(f"\n[CRON DIARIO] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Iniciando conciliacion acumulada: {start_date} al {end_date}")
+    print(f"\n[CRON DIARIO] [{now.strftime('%Y-%m-%d %H:%M:%S')}] Iniciando conciliacion acumulada: {start_date} al {end_date}")
     
     try:
         await execute_full_reconciliation(start_date=start_date, end_date=end_date)

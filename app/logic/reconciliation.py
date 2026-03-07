@@ -1,7 +1,10 @@
 import io
 import pandas as pd
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+# definir zona horaria de lima (utc-5)
+LIMA_TZ = timezone(timedelta(hours=-5))
 from app.common.s3_utils import read_file_from_s3, upload_file_to_s3, copy_file_in_s3, delete_file_from_s3, get_latest_file_from_s3
 from app.core.config import settings
 from app.logic.mail_formatter import format_reconciliation_email
@@ -25,8 +28,8 @@ class ReconciliationService:
         files.sort(reverse=True)
         return files[0] if files else None
     async def run_reconciliation(self, date_str: str):
-        # captura de tiempo de inicio
-        start_time_dt = datetime.now()
+        # captura de tiempo de inicio en hora de lima
+        start_time_dt = datetime.now(LIMA_TZ)
         start_time_str = start_time_dt.strftime('%H:%M:%S %d/%m/%Y')
         print(f"Fecha de inicio de proceso: {start_time_str}")
 
@@ -61,7 +64,7 @@ class ReconciliationService:
 
         # limpiar data de mvt (forzar string y quitar .0 si pandas lo trato como float)
         df_mvt_all['ID-TX'] = df_mvt_all['ID-TX'].astype(str).str.strip()
-        df_mvt_all['ID-TX'] = df_mvt_all['ID-TX'].apply(lambda x: x[:-2] if x.endswith('.0') else x)
+        df_mvt_all['ID-TX'] = df_mvt_all['ID-TX'].str.replace(r'\.0$', '', regex=True)
         
         df_mvt_all['Deposito(S/)'] = pd.to_numeric(df_mvt_all['Deposito(S/)'], errors='coerce').fillna(0)
         
@@ -131,14 +134,11 @@ class ReconciliationService:
             findings = []
 
             for _, row in df_prov.iterrows():
-                # normalizacion robusta de id para evitar redondeos si viniera como float o str
+                # normalizacion robusta de id
                 raw_id = row[prov_id_col]
-                if pd.isna(raw_id):
-                    p_id = ""
-                else:
-                    p_id = str(raw_id).strip()
-                    if p_id.endswith('.0'):
-                        p_id = p_id[:-2]
+                p_id = str(raw_id).strip() if pd.notnull(raw_id) else ""
+                if p_id.endswith('.0'):
+                    p_id = p_id[:-2]
                 
                 # registrar id visto para el reporte de mvt no encontrados
                 all_seen_ids.add(p_id)
@@ -326,8 +326,8 @@ class ReconciliationService:
 
         print(console_summary)
 
-        # captura de tiempo de fin
-        end_time_dt = datetime.now()
+        # captura de tiempo de fin en hora de lima
+        end_time_dt = datetime.now(LIMA_TZ)
         end_time_str = end_time_dt.strftime('%H:%M:%S %d/%m/%Y')
         print(f"Fecha de fin de proceso: {end_time_str}")
 
