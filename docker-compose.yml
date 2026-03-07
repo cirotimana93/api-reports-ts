@@ -4,12 +4,16 @@ services:
     container_name: reports_ts
     ports:
       - "8002:8000"
+    environment:
+      - TZ=America/Lima
     env_file:
       - .env
     restart: always
     volumes:
       - .:/app
       - /app/__pycache__
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8000/"]
       interval: 30s

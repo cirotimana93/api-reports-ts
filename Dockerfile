@@ -1,6 +1,11 @@
 # imagen base de python
 FROM python:3.11-slim
 
+# configurar zona horaria
+ENV TZ=America/Lima
+RUN apt-get update && apt-get install -y tzdata && \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
 # evitar que Python genere archivos .pyc y habilitar logs en tiempo real
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
