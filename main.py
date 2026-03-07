@@ -14,8 +14,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.APP_NAME,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
 )
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
@@ -23,7 +25,7 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return {"message": "Welcome to the FastAPI Multi-Scraper API"}
+    return {"message": "Welcome to the FastAPI Multi-Scraper API Teleservicios"}
 
 @app.api_route("/favicon.ico", include_in_schema=False, methods=["GET", "HEAD"])
 async def favicon():

@@ -4,6 +4,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "FastAPI Multi-Scraper"
     DEBUG: bool = True
     API_V1_STR: str = "/api/v1"
+    API_KEY: str = ""
 
     # mvt
     MVT_URL: str = ""
