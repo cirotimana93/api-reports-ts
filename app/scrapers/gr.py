@@ -20,7 +20,6 @@ class GRScraper(BaseScraper):
         self.entity_id = "121922"
 
     async def get_auth_info(self) -> Optional[Dict]:
-        """login en gr y captura el bearer token desde los headers de las peticiones al api"""
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
@@ -44,25 +43,24 @@ class GRScraper(BaseScraper):
 
             try:
                 print(f"[{self.name}] navegando a {self.base_url}")
-                await page.goto(self.base_url, timeout=60000, wait_until="networkidle")
+                await page.goto(self.base_url, timeout=60000, wait_until="domcontentloaded")
 
                 # llenar formulario de login
                 print(f"[{self.name}] esperando formulario de login")
-                await page.wait_for_selector('input[formcontrolname="domain"]', timeout=15000)
+                await page.wait_for_selector('input[formcontrolname="domain"]', timeout=30000)
 
                 await page.click('input[formcontrolname="domain"]')
-                await page.type('input[formcontrolname="domain"]', self.domain, delay=50)
+                await page.fill('input[formcontrolname="domain"]', self.domain)
 
                 await page.click('input[formcontrolname="username"]')
-                await page.type('input[formcontrolname="username"]', self.username, delay=50)
+                await page.fill('input[formcontrolname="username"]', self.username)
 
                 await page.click('input[type="password"]')
-                await page.type('input[type="password"]', self.password, delay=50)
+                await page.fill('input[type="password"]', self.password)
 
                 print(f"[{self.name}] enviando formulario de login")
                 await page.click('button[type="submit"]')
-                await page.wait_for_load_state("networkidle")
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)
 
                 # si el token aun no fue capturado, navegar a la seccion de tickets para disparar el api
                 if not token_event.is_set():
@@ -70,11 +68,11 @@ class GRScraper(BaseScraper):
                     try:
                         await page.goto(
                             f"{self.base_url}reports/tickets",
-                            timeout=20000, wait_until="networkidle"
+                            timeout=30000, wait_until="domcontentloaded"
                         )
-                        await asyncio.sleep(3)
-                    except Exception:
-                        pass
+                        await asyncio.sleep(5)
+                    except Exception as e:
+                        print(f"[{self.name}] aviso navegando a reportes: {e}")
 
                 # esperar hasta 15s al token
                 try:
@@ -96,7 +94,6 @@ class GRScraper(BaseScraper):
                 await browser.close()
 
     async def _fetch_api_data(self, auth_info: Dict, start_date: str, end_date: str) -> Any:
-        """extrae datos del api de tickets con paginacion por offset"""
         from_iso = f"{start_date}T05:00:00.000Z"
         end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
         to_iso = f"{end_dt.strftime('%Y-%m-%d')}T04:59:59.999Z"
@@ -133,7 +130,20 @@ class GRScraper(BaseScraper):
                 }
 
                 print(f"[{self.name}] extrayendo offset {offset}...")
-                response = await client.get(self.api_url, params=params, headers=headers, timeout=60.0)
+                
+                max_httpx_retries = 3
+                response = None
+                for attempt in range(max_httpx_retries):
+                    try:
+                        response = await client.get(self.api_url, params=params, headers=headers, timeout=60.0)
+                        break
+                    except httpx.RequestError as e:
+                        print(f"[{self.name}] error de red (offset {offset}), intento {attempt + 1}: {e}")
+                        await asyncio.sleep(5)
+                
+                if not response:
+                    print(f"[{self.name}] abortando extraccion en offset {offset} tras multiples errores de red")
+                    break
 
                 if response.status_code != 200:
                     print(f"[{self.name}] error en api (offset {offset}): {response.status_code}")
@@ -185,54 +195,44 @@ class GRScraper(BaseScraper):
             return [{"source": self.name, "status": "error", "message": "formato invalido"}]
 
         max_retries = 3
-        last_error = ""
+        auth_info = None
+        for attempt in range(max_retries):
+            auth_info = await self.get_auth_info()
+            if auth_info:
+                break
+            print(f"[{self.name}] intento {attempt + 1} fallido, esperando antes de reintentar...")
+            await asyncio.sleep(5)
+            
+        if not auth_info:
+            return [{"source": self.name, "status": "error", "message": "error de autenticacion tras varios intentos"}]
 
-        for attempt in range(1, max_retries + 1):
-            try:
-                if attempt > 1:
-                    wait_time = attempt * 5
-                    print(f"[{self.name}] reintento {attempt}/{max_retries} en {wait_time}s...")
-                    await asyncio.sleep(wait_time)
+        report_data = await self._fetch_api_data(auth_info, s_date, e_date)
 
-                auth_info = await self.get_auth_info()
-                if not auth_info:
-                    last_error = "error de autenticacion"
-                    continue
+        if not report_data.get("data"):
+            print(f"[{self.name}] no se encontraron registros")
+            return [{"source": self.name, "status": "success", "message": "sin datos", "count": 0}]
 
-                report_data = await self._fetch_api_data(auth_info, s_date, e_date)
+        items = report_data.get("data", [])
+        count = len(items)
 
-                if not report_data["data"]:
-                    print(f"[{self.name}] no se encontraron registros")
-                    return [{"source": self.name, "status": "success", "message": "sin datos", "count": 0}]
-
-                items = report_data.get("data", [])
-                count = len(items)
-                break # exito, salir del bucle de reintentos
-            except Exception as e:
-                last_error = str(e)
-                print(f"[{self.name}] error en intento {attempt}: {e}")
-                if attempt == max_retries:
-                    return [{"source": self.name, "status": "error", "message": f"fallo tras {max_retries} intentos: {last_error}"}]
-                continue
-        
-        if not auth_info or not report_data:
-             return [{"source": self.name, "status": "error", "message": f"fallo tras {max_retries} intentos: {last_error}"}]
-
-        # serializar json en memoria y subir directo a s3
+        # serializar json en memoria y subir directo a s3 (async para no bloquear fastapi)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         json_filename = f"{self.name.lower()}_reporte_{s_date.replace('-','')}_{e_date.replace('-','')}_{timestamp}.json"
-        json_bytes = json.dumps(report_data, indent=4, ensure_ascii=False).encode("utf-8")
+        
+        json_bytes = await asyncio.to_thread(
+            lambda: json.dumps(report_data, indent=4, ensure_ascii=False).encode("utf-8")
+        )
 
         s3_json_key = f"tls/reports/{json_filename}"
-        upload_file_to_s3(json_bytes, s3_json_key)
+        await asyncio.to_thread(upload_file_to_s3, json_bytes, s3_json_key)
         print(f"[{self.name}] json subido: {s3_json_key}")
 
         # convertir json -> xlsx y subir a s3/tls/reports/
         try:
-            xlsx_bytes = json_to_excel_vgr(items)
+            xlsx_bytes = await asyncio.to_thread(json_to_excel_vgr, items)
             xlsx_filename = json_filename.replace(".json", ".xlsx")
             s3_xlsx_key = f"tls/reports/{xlsx_filename}"
-            upload_file_to_s3(xlsx_bytes, s3_xlsx_key)
+            await asyncio.to_thread(upload_file_to_s3, xlsx_bytes, s3_xlsx_key)
             print(f"[{self.name}] xlsx subido: {s3_xlsx_key}")
         except Exception as exc:
             print(f"[{self.name}] error generando xlsx: {exc}")
@@ -241,8 +241,8 @@ class GRScraper(BaseScraper):
         # mover json a s3/tls/reports/processed/
         s3_processed_key = f"tls/reports/processed/{json_filename}"
         try:
-            copy_file_in_s3(s3_json_key, s3_processed_key)
-            delete_file_from_s3(s3_json_key)
+            await asyncio.to_thread(copy_file_in_s3, s3_json_key, s3_processed_key)
+            await asyncio.to_thread(delete_file_from_s3, s3_json_key)
             print(f"[{self.name}] json movido a processed/")
         except Exception as exc:
             print(f"[{self.name}] aviso al mover json: {exc}")

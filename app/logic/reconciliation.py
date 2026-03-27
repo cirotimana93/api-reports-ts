@@ -2,8 +2,7 @@ import io
 import pandas as pd
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
-
-# definir zona horaria de lima (utc-5)
+import asyncio
 LIMA_TZ = timezone(timedelta(hours=-5))
 from app.common.s3_utils import read_file_from_s3, upload_file_to_s3, copy_file_in_s3, delete_file_from_s3, get_latest_file_from_s3
 from app.core.config import settings
@@ -15,12 +14,13 @@ class ReconciliationService:
         self.report_prefix = "tls/reports/"
         self.processed_prefix = "tls/reports/processed/"
 
-    def _load_df_from_s3(self, s3_key: str) -> Optional[pd.DataFrame]:
-        content = read_file_from_s3(s3_key)
-        if not content:
-            return None
-        # cargar excel (los IDs ya vienen como string desde los conversores)
-        return pd.read_excel(io.BytesIO(content))
+    async def _load_df_from_s3(self, s3_key: str) -> Optional[pd.DataFrame]:
+        def _load():
+            content = read_file_from_s3(s3_key)
+            if not content:
+                return None
+            return pd.read_excel(io.BytesIO(content))
+        return await asyncio.to_thread(_load)
 
     def _get_latest_report(self, provider_name: str) -> Optional[str]:
         # buscar el reporte mas reciente del proveedor
@@ -34,7 +34,7 @@ class ReconciliationService:
         print(f"Fecha de inicio de proceso: {start_time_str}")
 
         # obtener lista de archivos en s3
-        files_in_s3 = list_files_in_s3(self.report_prefix)
+        files_in_s3 = await asyncio.to_thread(list_files_in_s3, self.report_prefix)
         
         mvt_file = self._get_latest_report_from_list(files_in_s3, "mvt")
         # first independiente
@@ -53,7 +53,7 @@ class ReconciliationService:
             return None
 
         # cargar data de mvt
-        df_mvt_all = self._load_df_from_s3(mvt_file)
+        df_mvt_all = await self._load_df_from_s3(mvt_file)
         if df_mvt_all is None: return None
 
         # eliminar duplicados por columna "ID" antes de procesar
@@ -205,7 +205,7 @@ class ReconciliationService:
         if first_files:
             first_dataframes = []
             for f in first_files:
-                df = self._load_df_from_s3(f)
+                df = await self._load_df_from_s3(f)
                 if df is not None:
                     # identificar origen del reporte
                     file_name = f.split("/")[-1].lower()
@@ -222,21 +222,21 @@ class ReconciliationService:
 
         # procesar vgr (omitir CANCELLED y REJECTED)
         if vgr_file:
-            df_vgr_raw = self._load_df_from_s3(vgr_file)
+            df_vgr_raw = await self._load_df_from_s3(vgr_file)
             if df_vgr_raw is not None:
                 df_vgr = df_vgr_raw[~df_vgr_raw['Status'].isin(["CANCELLED", "REJECTED"])].copy()
                 summary_dfs["VGR"] = analyze_provider("VGR", df_vgr, "Ticket ID", "Stake", "Won", "Status", "Date,Time", extra_cols={"Issued from": "Issued from"})
 
         # procesar gr (omitir CANCELLED y REJECTED)
         if gr_file:
-            df_gr_raw = self._load_df_from_s3(gr_file)
+            df_gr_raw = await self._load_df_from_s3(gr_file)
             if df_gr_raw is not None:
                 df_gr = df_gr_raw[~df_gr_raw['Status'].isin(["CANCELLED", "REJECTED"])].copy()
                 summary_dfs["GR"] = analyze_provider("GR", df_gr, "Ticket ID", "Stake", "Won", "Status", "Date,Time", extra_cols={"Issued from": "Issued from"})
 
         # procesar lottingo
         if lot_file:
-            df_lot = self._load_df_from_s3(lot_file)
+            df_lot = await self._load_df_from_s3(lot_file)
             if df_lot is not None:
                 # filtro room name solicitado
                 df_lot_filt = df_lot[df_lot['Room Name'] == "MVT Televentas "].copy()
@@ -257,20 +257,18 @@ class ReconciliationService:
             })
 
         # generar reporte final excel
-        output = io.BytesIO()
-        console_summary = ""
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            header_str = "\n*** resumen de conciliacion ***\n"
-            print(header_str)
-            console_summary += header_str
+        def _create_report():
+            out = io.BytesIO()
+            with pd.ExcelWriter(out, engine='openpyxl') as writer:
+                for sheet, df_find in summary_dfs.items():
+                    if not df_find.empty:
+                        df_find.to_excel(writer, sheet_name=sheet, index=False)
+                    else:
+                        pd.DataFrame(columns=["ID-TX", "Resultado"]).to_excel(writer, sheet_name=sheet, index=False)
+            return out.getvalue()
             
-            for sheet, df_find in summary_dfs.items():
-                if not df_find.empty:
-                    df_find.to_excel(writer, sheet_name=sheet, index=False)
-                else:
-                    pd.DataFrame(columns=["ID-TX", "Resultado"]).to_excel(writer, sheet_name=sheet, index=False)
-                
-                # preparar datos para el correo formateado
+        report_bytes = await asyncio.to_thread(_create_report)
+        
         email_summary_data = []
         for prov_display, df_res in summary_dfs.items():
             # para vgr/gr el filtro mvt_lookup tiene nombres especificos
@@ -334,8 +332,7 @@ class ReconciliationService:
         # subir reporte a s3
         suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
         final_filename = f"conciliacion_completa_{suffix}.xlsx"
-        report_bytes = output.getvalue()
-        upload_file_to_s3(report_bytes, f"tls/reports/processed_report/{final_filename}")
+        await asyncio.to_thread(upload_file_to_s3, report_bytes, f"tls/reports/processed_report/{final_filename}")
 
         # enviar correo con el reporte y el resumen
         try:
@@ -367,8 +364,8 @@ class ReconciliationService:
         for f in unique_sources:
             target = f.replace(self.report_prefix, self.processed_prefix)
             try:
-                copy_file_in_s3(f, target)
-                delete_file_from_s3(f)
+                await asyncio.to_thread(copy_file_in_s3, f, target)
+                await asyncio.to_thread(delete_file_from_s3, f)
             except Exception as e:
                 print(f"[ALERTA] no se pudo mover {f}: {e}")
 

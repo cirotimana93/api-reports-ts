@@ -23,11 +23,11 @@ app = FastAPI(
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 
-@app.api_route("/", methods=["GET", "HEAD"])
+@app.api_route("/", methods=["GET", "HEAD"], operation_id="root_api_route")
 async def root():
     return {"message": "Welcome to the FastAPI Multi-Scraper API Teleservicios"}
 
-@app.api_route("/favicon.ico", include_in_schema=False, methods=["GET", "HEAD"])
+@app.api_route("/favicon.ico", include_in_schema=False, methods=["GET", "HEAD"], operation_id="favicon_api_route")
 async def favicon():
     return {}
 

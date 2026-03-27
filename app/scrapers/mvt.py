@@ -40,8 +40,7 @@ class MVTScraper(BaseScraper):
 
             try:
                 print(f"[{self.name}] iniciando login para obtener token...")
-                await page.goto(self.base_url, timeout=60000)
-                await page.wait_for_load_state("networkidle")
+                await page.goto(self.base_url, timeout=60000, wait_until="domcontentloaded")
                 
                 try:
                     # esperar un poco por si hay redirecciones
@@ -49,7 +48,7 @@ class MVTScraper(BaseScraper):
                     
                     # buscar campo username usando wait_for_selector (que soporta timeout)
                     print(f"[{self.name}] esperando campo de usuario...")
-                    await page.wait_for_selector("#username", timeout=10000)
+                    await page.wait_for_selector("#username", timeout=30000)
                     
                     if await page.locator("#username").is_visible():
                         print(f"[{self.name}] formulario encontrado, enviando credenciales...")
@@ -167,27 +166,30 @@ class MVTScraper(BaseScraper):
         if not report_data.get("data"):
             return [{"source": self.name, "status": "error", "message": "no se obtuvieron datos para el rango"}]
 
-        # serializar json en memoria y subir directo a s3
+        # serializar json en memoria y subir directo a s3 (async para no bloquear fastapi)
         timestamp = datetime.now().strftime("%H%M%S")
         s_tag = s_date.replace("-", "")
         e_tag = e_date.replace("-", "")
         json_filename = f"{self.name.lower()}_reporte_{s_tag}_{e_tag}_{timestamp}.json"
-        json_bytes = json.dumps(report_data, indent=4, ensure_ascii=False).encode("utf-8")
+        
+        json_bytes = await asyncio.to_thread(
+            lambda: json.dumps(report_data, indent=4, ensure_ascii=False).encode("utf-8")
+        )
 
         items = report_data.get("data", [])
         count = len(items)
 
         # subir json a s3/tls/reports/
         s3_json_key = f"tls/reports/{json_filename}"
-        upload_file_to_s3(json_bytes, s3_json_key)
+        await asyncio.to_thread(upload_file_to_s3, json_bytes, s3_json_key)
         print(f"[{self.name}] json subido: {s3_json_key}")
 
         # convertir json -> xlsx y subir a s3/tls/reports/
         try:
-            xlsx_bytes = json_to_excel_mvt(items)
+            xlsx_bytes = await asyncio.to_thread(json_to_excel_mvt, items)
             xlsx_filename = json_filename.replace(".json", ".xlsx")
             s3_xlsx_key = f"tls/reports/{xlsx_filename}"
-            upload_file_to_s3(xlsx_bytes, s3_xlsx_key)
+            await asyncio.to_thread(upload_file_to_s3, xlsx_bytes, s3_xlsx_key)
             print(f"[{self.name}] xlsx subido: {s3_xlsx_key}")
         except Exception as exc:
             print(f"[{self.name}] error generando xlsx: {exc}")
@@ -196,8 +198,8 @@ class MVTScraper(BaseScraper):
         # mover json a s3/tls/reports/processed/
         s3_processed_key = f"tls/reports/processed/{json_filename}"
         try:
-            copy_file_in_s3(s3_json_key, s3_processed_key)
-            delete_file_from_s3(s3_json_key)
+            await asyncio.to_thread(copy_file_in_s3, s3_json_key, s3_processed_key)
+            await asyncio.to_thread(delete_file_from_s3, s3_json_key)
             print(f"[{self.name}] json movido a processed/")
         except Exception as exc:
             print(f"[{self.name}] aviso al mover json: {exc}")

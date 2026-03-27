@@ -4,12 +4,33 @@ import os
 from typing import List
 from app.core.config import settings
 
+from botocore.config import Config
+from datetime import datetime, timezone
+
+_S3_CLIENT = None
+_S3_CLIENT_EXPIRATION = None
+
 def get_s3_client_with_role():
+    global _S3_CLIENT, _S3_CLIENT_EXPIRATION
+    
+    now = datetime.now(timezone.utc)
+    if _S3_CLIENT is not None and _S3_CLIENT_EXPIRATION is not None:
+        if now < _S3_CLIENT_EXPIRATION:
+            return _S3_CLIENT
+
+    aws_config = Config(
+        read_timeout=120,
+        connect_timeout=30,
+        retries={'max_attempts': 5}
+    )
+
     try:
         sts = boto3.client(
             "sts",
+            region_name=settings.AWS_REGION,
             aws_access_key_id=settings.AWS_ACCESS_KEY,
-            aws_secret_access_key=settings.AWS_SECRET_KEY
+            aws_secret_access_key=settings.AWS_SECRET_KEY,
+            config=aws_config
         )
         assumed = sts.assume_role(
             RoleArn=settings.AWS_ROLE_ARN,
@@ -17,15 +38,19 @@ def get_s3_client_with_role():
             DurationSeconds=43200
         )
         creds = assumed['Credentials']
-        return boto3.client(
+        
+        _S3_CLIENT_EXPIRATION = creds['Expiration']
+        _S3_CLIENT = boto3.client(
             "s3",
             region_name=settings.AWS_REGION,
             aws_access_key_id=creds['AccessKeyId'],
             aws_secret_access_key=creds['SecretAccessKey'],
-            aws_session_token=creds['SessionToken']
+            aws_session_token=creds['SessionToken'],
+            config=aws_config
         )
-    except ClientError as e:
-        print("[ALERTA] error al asumir el rol:", e)
+        return _S3_CLIENT
+    except Exception as e:
+        print("[ALERTA] error al asumir el rol aws:", e)
         return None
     
 
