@@ -24,7 +24,7 @@ class LottingoScraper(BaseScraper):
 
             try:
                 print(f"[{self.name}] navegando a {self.base_url}")
-                await page.goto(self.base_url, timeout=60000, wait_until="networkidle")
+                await page.goto(self.base_url, timeout=60000, wait_until="domcontentloaded")
 
                 # llenar formulario de login
                 print(f"[{self.name}] esperando formulario de login")
@@ -35,10 +35,15 @@ class LottingoScraper(BaseScraper):
 
                 print(f"[{self.name}] enviando formulario de login")
                 await page.click('button[name="fr_login"]')
-                await page.wait_for_load_state("networkidle")
+                await asyncio.sleep(5)
 
                 # verificar login exitoso
-                form_present = await page.locator('form:has(input[name="fecha_inicio"])').count()
+                try:
+                    await page.wait_for_selector('form:has(input[name="fecha_inicio"])', timeout=30000)
+                    form_present = 1
+                except Exception:
+                    form_present = 0
+                
                 if form_present > 0:
                     print(f"[{self.name}] login exitoso")
                 else:
@@ -80,9 +85,22 @@ class LottingoScraper(BaseScraper):
         print(f"parametros enviados: fecha_inicio={start_date}, fecha_fin={fecha_fin_param}")
 
         # httpx sigue el redirect automaticamente y descarga el excel
-        async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=120.0, verify=False) as client:
             print(f"[{self.name}] solicitando reporte...")
-            response = await client.get(self.report_url, params=params, headers=headers)
+            
+            response = None
+            max_httpx_retries = 3
+            for attempt in range(max_httpx_retries):
+                try:
+                    response = await client.get(self.report_url, params=params, headers=headers)
+                    break
+                except httpx.RequestError as e:
+                    print(f"[{self.name}] error de red en descarga manual (intento {attempt+1}): {e}")
+                    await asyncio.sleep(5)
+            
+            if not response:
+                print(f"[{self.name}] abortando descarga tas multiples reintentos caidos")
+                return None
 
             if response.status_code != 200:
                 print(f"[{self.name}] error al descargar: {response.status_code}")
@@ -96,9 +114,9 @@ class LottingoScraper(BaseScraper):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{self.name.lower()}_reporte_{start_date.replace('-','')}_{end_date.replace('-','')}_{timestamp}.xls"
 
-            # subir a s3
+            # subir a s3 de manera asincrona
             s3_key = f"tls/reports/{filename}"
-            upload_file_to_s3(response.content, s3_key)
+            await asyncio.to_thread(upload_file_to_s3, response.content, s3_key)
 
             return {"s3_key": s3_key, "size_bytes": content_length}
 
@@ -147,12 +165,10 @@ class LottingoScraper(BaseScraper):
                 }]
 
             except Exception as e:
-                last_error = str(e)
-                print(f"[{self.name}] error en intento {attempt}: {e}")
-                if "connection" in last_error.lower() or "timeout" in last_error.lower() or "failed" in last_error.lower():
-                    continue
-                else:
-                    break
+                last_error = str(e) or repr(e)
+                print(f"[{self.name}] error en intento {attempt}: {last_error}")
+                # Forzar la reanudacion del bucle en cualquier tipo de error de Python (timeouts vacios, httpx, etc)
+                continue
 
         return [{"source": self.name, "status": "error", "message": f"fallo tras {max_retries} intentos. ultimo error: {last_error}"}]
 
