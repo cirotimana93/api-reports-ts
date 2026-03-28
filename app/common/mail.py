@@ -13,7 +13,7 @@ async def sendMailOffice365(subject: str, content: str, to_recipients: List[str]
         "grant_type": "client_credentials",
     }
     
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         # solicitar token
         token_res = await client.post(token_url, data=token_data)
         if token_res.status_code != 200:

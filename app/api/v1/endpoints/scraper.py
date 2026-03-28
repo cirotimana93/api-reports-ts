@@ -17,6 +17,19 @@ async def trigger_reconciliation(start_date: str = None, end_date: str = None):
         raise HTTPException(status_code=500, detail="error al ejecutar la conciliacion")
     return {"message": "proceso completado", "report": report_file}
 
+@router.post("/reconcile/previous-day")
+async def test_previous_day_reconciliation():
+    from datetime import datetime, timedelta, timezone
+    LIMA_TZ = timezone(timedelta(hours=-5))
+    now = datetime.now(LIMA_TZ)
+    start_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    end_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    report_file = await execute_full_reconciliation(start_date, end_date)
+    if not report_file:
+        raise HTTPException(status_code=500, detail="error al ejecutar la conciliacion del dia anterior")
+    return {"message": "proceso del dia anterior completado", "start_date": start_date, "end_date": end_date, "report": report_file}
+
 @router.get("/mvt", response_model=List[ScraperResult])
 async def get_mvt_data():
     scraper = MVTScraper()

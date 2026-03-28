@@ -355,7 +355,9 @@ class ReconciliationService:
                 attachment_name=final_filename
             )
         except Exception as e:
-            print(f"[ALERTA] no se pudo enviar el correo: {e}")
+            import traceback
+            print(f"[ALERTA] no se pudo enviar el correo: {repr(e)}")
+            traceback.print_exc()
 
         # mover archivos procesados
         sources = [mvt_file, vgr_file, gr_file, lot_file] + first_files
