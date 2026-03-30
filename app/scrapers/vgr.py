@@ -117,62 +117,62 @@ class VGRScraper(BaseScraper):
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         }
 
-        async with httpx.AsyncClient() as client:
-            while True:
-                params = {
-                    "entityId": self.entity_id,
-                    "startTime": from_iso,
-                    "endTime": to_iso,
-                    "first": offset,
-                    "n": page_size,
-                    "levelDetails": "1",
-                    "orderBy": "DESC",
-                    "status": "",
-                    "withChildren": "true"
-                }
+        while True:
+            params = {
+                "entityId": self.entity_id,
+                "startTime": from_iso,
+                "endTime": to_iso,
+                "first": offset,
+                "n": page_size,
+                "levelDetails": "1",
+                "orderBy": "DESC",
+                "status": "",
+                "withChildren": "true"
+            }
 
-                print(f"[{self.name}] extrayendo offset {offset}...")
-                
-                max_httpx_retries = 3
-                response = None
-                for attempt in range(max_httpx_retries):
-                    try:
+            print(f"[{self.name}] extrayendo offset {offset}...")
+            
+            max_httpx_retries = 3
+            response = None
+            for attempt in range(max_httpx_retries):
+                try:
+                    async with httpx.AsyncClient() as client:
                         response = await client.get(self.api_url, params=params, headers=headers, timeout=60.0)
                         break
-                    except httpx.RequestError as e:
-                        print(f"[{self.name}] error de red (offset {offset}), intento {attempt + 1}: {e}")
-                        await asyncio.sleep(5)
-                
-                if not response:
-                    print(f"[{self.name}] abortando extraccion en offset {offset} tras multiples errores de red")
-                    break
+                except Exception as e:
+                    print(f"[{self.name}] error de red (offset {offset}), intento {attempt + 1}: {e}")
+                    await asyncio.sleep(5)
+            
+            if not response:
+                print(f"[{self.name}] abortando extraccion en offset {offset} tras multiples errores de red")
+                break
 
-                if response.status_code != 200:
-                    print(f"[{self.name}] error en api (offset {offset}): {response.status_code}")
-                    break
+            if response.status_code != 200:
+                print(f"[{self.name}] error en api (offset {offset}): {response.status_code}")
+                break
 
-                page_data = response.json()
+            page_data = response.json()
 
-                if not isinstance(page_data, list) or not page_data:
-                    break
+            if not isinstance(page_data, list) or not page_data:
+                break
 
-                all_data.extend(page_data)
+            all_data.extend(page_data)
 
-                # obtener total del header x-total-count si existe, si no inferir por el tamanio de la pagina
-                if total_records is None:
-                    total_header = response.headers.get("x-total-count") or response.headers.get("X-Total-Count")
-                    if total_header:
-                        total_records = int(total_header)
+            # obtener total del header x-total-count si existe, si no inferir por el tamanio de la pagina
+            if total_records is None:
+                total_header = response.headers.get("x-total-count") or response.headers.get("X-Total-Count")
+                if total_header:
+                    total_records = int(total_header)
 
-                count_label = f"/ {total_records}" if total_records else ""
-                print(f"[{self.name}] progreso: {len(all_data)} {count_label}")
+            count_label = f"/ {total_records}" if total_records else ""
+            print(f"[{self.name}] progreso: {len(all_data)} {count_label}")
 
-                # si la pagina devolvio menos registros de los solicitados, ya termino
-                if len(page_data) < page_size:
-                    break
+            # si la pagina devolvio menos registros de los solicitados, ya termino
+            if len(page_data) < page_size:
+                break
 
-                offset += page_size
-                await asyncio.sleep(0.5)
+            offset += page_size
+            await asyncio.sleep(0.5)
 
         return {
             "data": all_data,

@@ -84,41 +84,41 @@ class LottingoScraper(BaseScraper):
         print(f"fechas recibidas: {start_date} - {end_date}")
         print(f"parametros enviados: fecha_inicio={start_date}, fecha_fin={fecha_fin_param}")
 
-        # httpx sigue el redirect automaticamente y descarga el excel
-        async with httpx.AsyncClient(follow_redirects=True, timeout=120.0, verify=False) as client:
-            print(f"[{self.name}] solicitando reporte...")
-            
-            response = None
-            max_httpx_retries = 3
-            for attempt in range(max_httpx_retries):
-                try:
+        print(f"[{self.name}] solicitando reporte...")
+        
+        response = None
+        max_httpx_retries = 3
+        for attempt in range(max_httpx_retries):
+            try:
+                # Instanciar el cliente dentro del bucle garantiza conexiones limpias en caso de reintentos tras errores de red graves
+                async with httpx.AsyncClient(follow_redirects=True, timeout=120.0, verify=False) as client:
                     response = await client.get(self.report_url, params=params, headers=headers)
                     break
-                except httpx.RequestError as e:
-                    print(f"[{self.name}] error de red en descarga manual (intento {attempt+1}): {e}")
-                    await asyncio.sleep(5)
-            
-            if not response:
-                print(f"[{self.name}] abortando descarga tas multiples reintentos caidos")
-                return None
+            except Exception as e:
+                print(f"[{self.name}] error de red en descarga manual (intento {attempt+1}): {e}")
+                await asyncio.sleep(5)
+        
+        if not response:
+            print(f"[{self.name}] abortando descarga tas multiples reintentos caidos")
+            return None
 
-            if response.status_code != 200:
-                print(f"[{self.name}] error al descargar: {response.status_code}")
-                return None
+        if response.status_code != 200:
+            print(f"[{self.name}] error al descargar: {response.status_code}")
+            return None
 
-            content_type = response.headers.get("content-type", "")
-            content_length = len(response.content)
-            print(f"[{self.name}] descarga exitosa. content-type: {content_type}, bytes: {content_length}")
+        content_type = response.headers.get("content-type", "")
+        content_length = len(response.content)
+        print(f"[{self.name}] descarga exitosa. content-type: {content_type}, bytes: {content_length}")
 
-            # construir nombre del archivo para s3
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{self.name.lower()}_reporte_{start_date.replace('-','')}_{end_date.replace('-','')}_{timestamp}.xls"
+        # construir nombre del archivo para s3
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{self.name.lower()}_reporte_{start_date.replace('-','')}_{end_date.replace('-','')}_{timestamp}.xls"
 
-            # subir a s3 de manera asincrona
-            s3_key = f"tls/reports/{filename}"
-            await asyncio.to_thread(upload_file_to_s3, response.content, s3_key)
+        # subir a s3 de manera asincrona
+        s3_key = f"tls/reports/{filename}"
+        await asyncio.to_thread(upload_file_to_s3, response.content, s3_key)
 
-            return {"s3_key": s3_key, "size_bytes": content_length}
+        return {"s3_key": s3_key, "size_bytes": content_length}
 
     async def scrape(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Any]:
         # flujo principal con reintentos para manejar fallos de red

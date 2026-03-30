@@ -189,43 +189,44 @@ class FIRSTScraper(BaseScraper):
             "cookie": auth_info.get("cookies", "")
         }
 
-        async with httpx.AsyncClient() as client:
-            while True:
-                payload = {**base_payload, "pageNumber": page, "pageSize": limit}
-                success = False
+        while True:
+            payload = {**base_payload, "pageNumber": page, "pageSize": limit}
+            success = False
 
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        if attempt > 1:
-                            print(f"[{self.name}][{label}] reintento {attempt}/{max_retries}...")
-                            await asyncio.sleep(2 * attempt)
-                        
-                        print(f"[{self.name}][{label}] extrayendo pagina {page}...")
+            for attempt in range(1, max_retries + 1):
+                try:
+                    if attempt > 1:
+                        print(f"[{self.name}][{label}] reintento {attempt}/{max_retries}...")
+                        await asyncio.sleep(2 * attempt)
+                    
+                    print(f"[{self.name}][{label}] extrayendo pagina {page}...")
+                    
+                    async with httpx.AsyncClient() as client:
                         response = await client.post(url, json=payload, headers=headers, timeout=90.0)
 
-                        if response.status_code == 200:
-                            result = response.json()
-                            data_obj = result.get("data", {})
-                            if not data_obj:
-                                success = True
-                                break
-
-                            page_data = data_obj.get("list", [])
-                            total_records = data_obj.get("total", 0)
-                            all_data.extend(page_data)
-                            print(f"[{self.name}][{label}] progreso: {len(all_data)} / {total_records}")
+                    if response.status_code == 200:
+                        result = response.json()
+                        data_obj = result.get("data", {})
+                        if not data_obj:
                             success = True
                             break
-                        else:
-                            print(f"[{self.name}][{label}] error en api {response.status_code} (intento {attempt})")
-                    except Exception as e:
-                        print(f"[{self.name}][{label}] excepcion en api: {e} (intento {attempt})")
 
-                if not success or (len(all_data) >= total_records or not page_data if 'page_data' in locals() else True):
-                    break
+                        page_data = data_obj.get("list", [])
+                        total_records = data_obj.get("total", 0)
+                        all_data.extend(page_data)
+                        print(f"[{self.name}][{label}] progreso: {len(all_data)} / {total_records}")
+                        success = True
+                        break
+                    else:
+                        print(f"[{self.name}][{label}] error en api {response.status_code} (intento {attempt})")
+                except Exception as e:
+                    print(f"[{self.name}][{label}] excepcion en api: {e} (intento {attempt})")
 
-                page += 1
-                await asyncio.sleep(0.5)
+            if not success or (len(all_data) >= total_records or not page_data if 'page_data' in locals() else True):
+                break
+
+            page += 1
+            await asyncio.sleep(0.5)
 
         return {"data": all_data, "total": total_records}
 
@@ -297,9 +298,17 @@ class FIRSTScraper(BaseScraper):
             print(f"[{self.name}] formato de fecha invalido")
             return [{"source": self.name, "status": "error", "message": "formato invalido"}]
 
-        auth_info = await self.get_auth_info()
+        max_retries = 3
+        auth_info = None
+        for attempt in range(max_retries):
+            auth_info = await self.get_auth_info()
+            if auth_info:
+                break
+            print(f"[{self.name}] intento de login {attempt + 1} fallido, esperando antes de reintentar...")
+            await asyncio.sleep(5)
+
         if not auth_info:
-            return [{"source": self.name, "status": "error", "message": "error de autenticacion"}]
+            return [{"source": self.name, "status": "error", "message": "error de autenticacion tras varios intentos"}]
 
         print(f"fechas recibidas: {s_date} - {e_date}")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

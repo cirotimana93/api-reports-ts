@@ -149,9 +149,17 @@ class MVTScraper(BaseScraper):
 
     async def scrape(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Any]:
         """flujo principal: login -> fetch -> save con rango de fechas"""
-        token = await self.get_token()
+        max_retries = 3
+        token = None
+        for attempt in range(max_retries):
+            token = await self.get_token()
+            if token:
+                break
+            print(f"[{self.name}] intento de login {attempt + 1} fallido, esperando antes de reintentar...")
+            await asyncio.sleep(5)
+
         if not token:
-            return [{"source": self.name, "status": "error", "message": "no se obtuvo token"}]
+            return [{"source": self.name, "status": "error", "message": "no se obtuvo token tras varios intentos"}]
 
         # normalizar fechas para el guardado y logica
         today = datetime.now().strftime("%Y-%m-%d")
