@@ -6,19 +6,27 @@ import asyncio
 # definir zona horaria de lima (utc-5)
 LIMA_TZ = timezone(timedelta(hours=-5))
 
-@repeat_at(cron="55 2/3 * * *")
 async def scheduled_reconciliation():
     # usamos la fecha de hoy en lima para el proceso automatico
     today = datetime.now(LIMA_TZ).strftime("%Y-%m-%d")
     
-    print(f"\n[CRON POR HORA] [{datetime.now(LIMA_TZ).strftime('%Y-%m-%d %H:%M:%S')}] Iniciando proceso completo...")
+    print(f"\n[CRON PROGRAMADO] [{datetime.now(LIMA_TZ).strftime('%Y-%m-%d %H:%M:%S')}] Iniciando proceso completo...")
     
     try:
         # ejecutamos el flujo completo (step 1 y step 2)
         await execute_full_reconciliation(start_date=today)
-        print(f"[CRON POR HORA] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Proceso programado finalizado con exito.")
+        print(f"[CRON PROGRAMADO] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Proceso programado finalizado con exito.")
     except Exception as e:
-        print(f"[CRON POR HORA] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ERROR en proceso programado: {e}")
+        print(f"[CRON PROGRAMADO] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ERROR en proceso programado: {e}")
+
+# se dividen las ejecuciones en dos programaciones para cubrir 09:00, 15:00, 18:00 y 23:50 sin minutos adicionales
+@repeat_at(cron="0 9,15,18 * * *")
+async def scheduled_reconciliation_day():
+    await scheduled_reconciliation()
+
+@repeat_at(cron="50 23 * * *")
+async def scheduled_reconciliation_night():
+    await scheduled_reconciliation()
 
 @repeat_at(cron="15 3 * * *")
 async def daily_full_month_reconciliation():
@@ -61,7 +69,9 @@ async def previous_day_reconciliation():
 
 async def run_events():
     # al llamar a la funcion decorada con repeat_at, se activa el bucle de programacion
-    asyncio.create_task(scheduled_reconciliation())
+    asyncio.create_task(scheduled_reconciliation_day())
+    asyncio.create_task(scheduled_reconciliation_night())
     ##asyncio.create_task(daily_full_month_reconciliation())
-    asyncio.create_task(previous_day_reconciliation())
-    print("[EVENTS] Control de eventos programados activado (Cada 3h, Diarios a las 03:15 y 04:00).")
+    # asyncio.create_task(previous_day_reconciliation())
+    print("[EVENTS] Control de eventos programados activado (Diarios a las 09:00, 15:00, 18:00 y 23:50).")
+
