@@ -77,3 +77,61 @@ def format_reconciliation_email(
     """
     
     return html
+
+
+def format_error_email(failed_reports: Dict[str, str]) -> str:
+    # devCt: plantilla html directa para notificacion de fallos sin librerias externas
+    styles = """
+    <style>
+        body { font-family: Arial, sans-serif; color: #333; line-height: 1.5; }
+        .alert-box { background-color: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; padding: 15px; border-radius: 4px; margin-bottom: 20px; }
+        .error-table { border-collapse: collapse; width: 100%; margin-top: 15px; font-family: Arial, sans-serif; }
+        .error-table th { background-color: #c82333; color: white; text-align: left; padding: 10px; border: 1px solid #ddd; }
+        .error-table td { padding: 10px; border: 1px solid #ddd; }
+        .error-table tr:nth-child(even) { background-color: #fdf7f7; }
+        .contact-box { margin-top: 20px; padding: 15px; background-color: #e2e3e5; border-left: 5px solid #6c757d; font-weight: bold; color: #383d41; }
+    </style>
+    """
+    
+    html = f"""
+    <html>
+    <head>{styles}</head>
+    <body>
+        <div class="alert-box">
+            <h3 style="margin: 0 0 10px 0;">Alerta: Error en proceso de conciliacion</h3>
+            <p style="margin: 0;">Se presentaron errores en la descarga y/o procesamiento de reportes tras 3 intentos de ejecucion. La conciliacion no pudo completarse.</p>
+        </div>
+        
+        <table class="error-table">
+            <thead>
+                <tr>
+                    <th style="width: 30%;">Reporte / Proveedor</th>
+                    <th>Detalle del error</th>
+                </tr>
+            </thead>
+            <tbody>
+    """
+    
+    for reportName, errorDetail in failed_reports.items():
+        html += f"""
+                <tr>
+                    <td><strong>{reportName}</strong></td>
+                    <td>{errorDetail}</td>
+                </tr>
+        """
+        
+    html += """
+            </tbody>
+        </table>
+        
+        <div class="contact-box">
+            Por favor, comunicarse con el area de Optimizacion Operativa para la revision correspondiente.
+        </div>
+    </body>
+    </html>
+    """
+    return html
+
+# devCt: alias camelcase segun reglas de desarrollo
+formatErrorEmail = format_error_email
+
