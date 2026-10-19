@@ -48,8 +48,21 @@ class ReconciliationService:
         gr_file = self._get_latest_report_from_list(files_in_s3, "gr")
         lot_file = self._get_latest_report_from_list(files_in_s3, "lottingo")
 
+        missingReports = []
         if not mvt_file:
-            print("[ALERTA] no se encontro reporte de mvt")
+            missingReports.append("MVT")
+        if not first_files:
+            missingReports.append("First")
+        if not vgr_file:
+            missingReports.append("VGR")
+        if not gr_file:
+            missingReports.append("GR")
+        if not lot_file:
+            missingReports.append("Lottingo")
+
+        if missingReports:
+            # devCt: detener conciliacion si falta algun reporte para no enviar correo incompleto
+            print(f"[ALERTA] faltan los siguientes reportes para conciliar: {', '.join(missingReports)}")
             return None
 
         # cargar data de mvt

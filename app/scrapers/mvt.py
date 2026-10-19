@@ -117,11 +117,22 @@ class MVTScraper(BaseScraper):
                         "limit": str(limit)
                     }
                     
-                    print(f"[{self.name}] extrayendo datos desde {s_date} hasta {e_date}, pagina {page}...")
-                    response = await client.get(self.api_url, params=params, headers=headers, timeout=60.0)
-                    
-                    if response.status_code != 200:
-                        print(f"[{self.name}] error api en pagina {page}: {response.status_code}")
+                    pageFetched = False
+                    for pageAttempt in range(1, 4):
+                        try:
+                            print(f"[{self.name}] extrayendo datos desde {s_date} hasta {e_date}, pagina {page} (intento {pageAttempt}/3)...")
+                            response = await client.get(self.api_url, params=params, headers=headers, timeout=60.0)
+                            if response.status_code == 200:
+                                pageFetched = True
+                                break
+                            print(f"[{self.name}] error api en pagina {page}: {response.status_code} (intento {pageAttempt}/3)")
+                        except Exception as reqErr:
+                            print(f"[{self.name}] excepcion de red en pagina {page}: {reqErr} (intento {pageAttempt}/3)")
+                        await asyncio.sleep(2)
+
+                    if not pageFetched:
+                        # devCt: romper extraccion si falla tras agotar reintentos por pagina
+                        print(f"[{self.name}] fallo definitivo en pagina {page}")
                         break
                         
                     result = response.json()
