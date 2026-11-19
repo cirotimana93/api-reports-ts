@@ -147,6 +147,10 @@ class VGRScraper(BaseScraper):
                 print(f"[{self.name}] abortando extraccion en offset {offset} tras multiples errores de red")
                 break
 
+            if response.status_code == 204:
+                # 204 no content indica que no existen registros para el rango consultado
+                break
+
             if response.status_code != 200:
                 print(f"[{self.name}] error en api (offset {offset}): {response.status_code}")
                 break
@@ -209,12 +213,11 @@ class VGRScraper(BaseScraper):
 
         report_data = await self._fetch_api_data(auth_info, s_date, e_date)
 
-        if not report_data["data"]:
-            print(f"[{self.name}] no se encontraron registros")
-            return [{"source": self.name, "status": "success", "message": "sin datos", "count": 0}]
-
         items = report_data.get("data", [])
         count = len(items)
+
+        if not items:
+            print(f"[{self.name}] no se encontraron registros")
 
         # serializar json en memoria y subir directo a s3 (async para no bloquear fastapi)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -252,7 +255,8 @@ class VGRScraper(BaseScraper):
             "source": self.name,
             "status": "success",
             "count": count,
-            "total": report_data["total"],
+            "total": report_data.get("total", count),
+            "message": "sin datos" if count == 0 else "exitoso",
             "s3_json": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_processed_key}",
             "s3_xlsx": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_xlsx_key}" if s3_xlsx_key else "",
         }]

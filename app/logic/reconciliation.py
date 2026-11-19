@@ -27,11 +27,14 @@ class ReconciliationService:
         files = [f for f in list_files_in_s3(self.report_prefix) if provider_name.lower() in f.lower() and f.endswith(".xlsx")]
         files.sort(reverse=True)
         return files[0] if files else None
-    async def run_reconciliation(self, date_str: str):
+    async def run_reconciliation(self, date_str: str = None, empty_providers: Optional[List[str]] = None):
         # captura de tiempo de inicio en hora de lima
         start_time_dt = datetime.now(LIMA_TZ)
         start_time_str = start_time_dt.strftime('%H:%M:%S %d/%m/%Y')
         print(f"Fecha de inicio de proceso: {start_time_str}")
+
+        empty_providers = empty_providers or []
+        empty_provider_names = {p.upper() for p in empty_providers}
 
         # obtener lista de archivos en s3
         files_in_s3 = await asyncio.to_thread(list_files_in_s3, self.report_prefix)
@@ -51,13 +54,13 @@ class ReconciliationService:
         missingReports = []
         if not mvt_file:
             missingReports.append("MVT")
-        if not first_files:
+        if not first_files and "FIRST" not in empty_provider_names:
             missingReports.append("First")
-        if not vgr_file:
+        if not vgr_file and "VGR" not in empty_provider_names:
             missingReports.append("VGR")
-        if not gr_file:
+        if not gr_file and "GR" not in empty_provider_names:
             missingReports.append("GR")
-        if not lot_file:
+        if not lot_file and "LOTTINGO" not in empty_provider_names:
             missingReports.append("Lottingo")
 
         if missingReports:
@@ -215,11 +218,12 @@ class ReconciliationService:
             return pd.DataFrame(findings, columns=cols)
 
         # procesar reportes de first
+        df_first = pd.DataFrame()
         if first_files:
             first_dataframes = []
             for f in first_files:
                 df = await self._load_df_from_s3(f)
-                if df is not None:
+                if df is not None and not df.empty:
                     # identificar origen del reporte
                     file_name = f.split("/")[-1].lower()
                     if "bethistory" in file_name: source = "first_bethistory"
@@ -232,28 +236,47 @@ class ReconciliationService:
             if first_dataframes:
                 df_first = pd.concat(first_dataframes, ignore_index=True)
                 summary_dfs["First"] = analyze_provider("First", df_first, "Purchase_ID", "Stake", "Return", "Bet_Status", "Bet_Date_And_Time", extra_cols={"Customer ID": "Customer_ID"})
+            else:
+                summary_dfs["First"] = pd.DataFrame()
+        elif "FIRST" in empty_provider_names:
+            summary_dfs["First"] = pd.DataFrame()
 
         # procesar vgr (omitir CANCELLED y REJECTED)
+        df_vgr = pd.DataFrame()
         if vgr_file:
             df_vgr_raw = await self._load_df_from_s3(vgr_file)
-            if df_vgr_raw is not None:
+            if df_vgr_raw is not None and not df_vgr_raw.empty and 'Status' in df_vgr_raw.columns:
                 df_vgr = df_vgr_raw[~df_vgr_raw['Status'].isin(["CANCELLED", "REJECTED"])].copy()
                 summary_dfs["VGR"] = analyze_provider("VGR", df_vgr, "Ticket ID", "Stake", "Won", "Status", "Date,Time", extra_cols={"Issued from": "Issued from"})
+            else:
+                summary_dfs["VGR"] = pd.DataFrame()
+        elif "VGR" in empty_provider_names:
+            summary_dfs["VGR"] = pd.DataFrame()
 
         # procesar gr (omitir CANCELLED y REJECTED)
+        df_gr = pd.DataFrame()
         if gr_file:
             df_gr_raw = await self._load_df_from_s3(gr_file)
-            if df_gr_raw is not None:
+            if df_gr_raw is not None and not df_gr_raw.empty and 'Status' in df_gr_raw.columns:
                 df_gr = df_gr_raw[~df_gr_raw['Status'].isin(["CANCELLED", "REJECTED"])].copy()
                 summary_dfs["GR"] = analyze_provider("GR", df_gr, "Ticket ID", "Stake", "Won", "Status", "Date,Time", extra_cols={"Issued from": "Issued from"})
+            else:
+                summary_dfs["GR"] = pd.DataFrame()
+        elif "GR" in empty_provider_names:
+            summary_dfs["GR"] = pd.DataFrame()
 
         # procesar lottingo
+        df_lot_filt = pd.DataFrame()
         if lot_file:
             df_lot = await self._load_df_from_s3(lot_file)
-            if df_lot is not None:
+            if df_lot is not None and not df_lot.empty and 'Room Name' in df_lot.columns:
                 # filtro room name solicitado
                 df_lot_filt = df_lot[df_lot['Room Name'] == "MVT Televentas "].copy()
                 summary_dfs["Lottingo"] = analyze_provider("Lottingo", df_lot_filt, "Ticket Id", "Cantidad", "Winning", "Estado", "Creado en")
+            else:
+                summary_dfs["Lottingo"] = pd.DataFrame()
+        elif "LOTTINGO" in empty_provider_names:
+            summary_dfs["Lottingo"] = pd.DataFrame()
 
         # reporte de mvt no encontrados en ningun proveedor (solo Apuesta Generada)
         mvt_not_found = df_mvt_raw[
@@ -269,6 +292,13 @@ class ReconciliationService:
                 "Numero Documento": "DNI"
             })
 
+        total_by_provider = {
+            "First": len(df_first),
+            "VGR": len(df_vgr),
+            "GR": len(df_gr),
+            "Lottingo": len(df_lot_filt)
+        }
+
         # generar reporte final excel
         def _create_report():
             out = io.BytesIO()
@@ -277,7 +307,10 @@ class ReconciliationService:
                     if not df_find.empty:
                         df_find.to_excel(writer, sheet_name=sheet, index=False)
                     else:
-                        pd.DataFrame(columns=["ID-TX", "Resultado"]).to_excel(writer, sheet_name=sheet, index=False)
+                        # devCt: indicar claramente cuando un proveedor no tuvo registros o no tuvo diferencias
+                        prov_total = total_by_provider.get(sheet, 0)
+                        result_msg = "sin transacciones registradas para la fecha" if (prov_total == 0 or sheet.upper() in empty_provider_names) else "sin discrepancias (todas las transacciones coinciden)"
+                        pd.DataFrame([{"ID-TX": "-", "Resultado": result_msg}]).to_excel(writer, sheet_name=sheet, index=False)
             return out.getvalue()
             
         report_bytes = await asyncio.to_thread(_create_report)
@@ -297,18 +330,14 @@ class ReconciliationService:
                 prov_in_mvt = df_mvt_raw[df_mvt_raw['Proveedor'] == name]
                 total_mvt_prov += len(prov_in_mvt)
 
-            total_prov = 0
-            if prov_display == "First": total_prov = len(df_first) if 'df_first' in locals() else 0
-            elif prov_display == "VGR": total_prov = len(df_vgr) if 'df_vgr' in locals() else 0
-            elif prov_display == "GR": total_prov = len(df_gr) if 'df_gr' in locals() else 0
-            elif prov_display == "Lottingo": total_prov = len(df_lot_filt) if 'df_lot_filt' in locals() else 0
+            total_prov = total_by_provider.get(prov_display, 0)
             
             if prov_display == "MVT no encontrados":
                 # This sheet is for MVT entries not found in provider reports,
                 # not a provider report itself, so skip for this summary.
                 continue
 
-            missing = len(df_res[df_res['Tipo de Caso'].str.contains("ETAPA 01", na=False)]) if 'Tipo de Caso' in df_res.columns else 0
+            missing = len(df_res[df_res['Tipo de Caso'].str.contains("ETAPA 01", na=False)]) if ('Tipo de Caso' in df_res.columns and not df_res.empty) else 0
             found_count = total_prov - missing
 
             email_summary_data.append({
@@ -328,8 +357,9 @@ class ReconciliationService:
             total_mvt_prov = item["total_mvt"]
             tx_presentes = item["presentes"]
             ausentes = item["no_presentes"]
+            note = " (sin datos)" if total_prov == 0 else ""
 
-            console_summary += f"\nTotal de operaciones en proveedor {prov_display}: {total_prov}\n"
+            console_summary += f"\nTotal de operaciones en proveedor {prov_display}: {total_prov}{note}\n"
             console_summary += f"Total de operaciones del proveedor {prov_display} en MVT: {total_mvt_prov}\n"
             console_summary += f"Tx del proveedor {prov_display} presentes en MVT: {tx_presentes}\n"
             console_summary += f"Tx del proveedor {prov_display} no presentes en MVT: {ausentes}\n"
