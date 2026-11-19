@@ -144,6 +144,7 @@ async def execute_full_reconciliation(start_date: str = None, end_date: str = No
 
         uploadedFiles = []
         failedReports = {}
+        emptyProviders = []
 
         print("\n[STEP 1] Descargando reportes de proveedores...")
         for scraper in scrapers:
@@ -152,6 +153,13 @@ async def execute_full_reconciliation(start_date: str = None, end_date: str = No
             )
             if success and result:
                 uploadedFiles.extend(extractUploadedKeys(result))
+                # devCt: registrar proveedores que reportaron sin datos para conciliarlos como vacios
+                isEmpty = any(
+                    isinstance(r, dict) and (r.get("count") == 0 or r.get("message") == "sin datos")
+                    for r in result
+                )
+                if isEmpty:
+                    emptyProviders.append(scraper.name)
             else:
                 failedReports[scraper.name] = errorDetail
 
@@ -175,7 +183,7 @@ async def execute_full_reconciliation(start_date: str = None, end_date: str = No
         print("\n[STEP 2] Iniciando analisis de conciliacion...")
         service = ReconciliationService()
         try:
-            report_file = await service.run_reconciliation(start_date)
+            report_file = await service.run_reconciliation(start_date, empty_providers=emptyProviders)
             if report_file:
                 print(f"\n[SUCCESS] Conciliacion completada. Reporte generado: {report_file}")
                 return report_file

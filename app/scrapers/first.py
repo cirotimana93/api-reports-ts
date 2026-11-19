@@ -330,11 +330,10 @@ class FIRSTScraper(BaseScraper):
                     results.append({"source": self.name, "report": report_name, "status": "error", "message": "error en extraccion"})
                     continue
 
-                count = len(report_data["data"])
+                items = report_data.get("data", [])
+                count = len(items)
                 if not count:
-                    print(f"[{self.name}][{report_name}] sin datos encontrados")
-                    results.append({"source": self.name, "report": report_name, "status": "success", "message": "sin datos", "count": 0})
-                    continue
+                    print(f"[{self.name}][{report_name}] sin datos encontrados para la fecha consultada")
 
                 # guardar en s3
                 json_filename = f"{self.name.lower()}_{report_name}_{s_date.replace('-','')}_{e_date.replace('-','')}_{timestamp}.json"
@@ -345,7 +344,7 @@ class FIRSTScraper(BaseScraper):
 
                 # conversion y subida de excel
                 try:
-                    xlsx_bytes = convert_first_report(report_name, report_data["data"])
+                    xlsx_bytes = convert_first_report(report_name, items)
                     xlsx_filename = json_filename.replace(".json", ".xlsx")
                     s3_xlsx_key = f"tls/reports/{xlsx_filename}"
                     upload_file_to_s3(xlsx_bytes, s3_xlsx_key)
@@ -367,7 +366,8 @@ class FIRSTScraper(BaseScraper):
                     "report": report_name,
                     "status": "success",
                     "count": count,
-                    "total": report_data.get("total", 0),
+                    "total": report_data.get("total", count),
+                    "message": "sin datos" if count == 0 else "exitoso",
                     "s3_json": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_processed_key}",
                     "s3_xlsx": f"s3://prvfr-dev-s3bucket-ue01-001/{s3_xlsx_key}" if s3_xlsx_key else "",
                 })

@@ -58,10 +58,12 @@ def format_reconciliation_email(
     """
     
     for row in summary_data:
+        prov_count = row['total_prov']
+        prov_label = f"{prov_count} (sin datos)" if prov_count == 0 else str(prov_count)
         html += f"""
                 <tr>
                     <td>{row['proveedor']}</td>
-                    <td>{row['total_prov']}</td>
+                    <td>{prov_label}</td>
                     <td>{row['total_mvt']}</td>
                     <td>{row['presentes']}</td>
                     <td>{row['no_presentes']}</td>
@@ -71,6 +73,18 @@ def format_reconciliation_email(
     html += """
             </tbody>
         </table>
+    """
+
+    empty_provs = [r['proveedor'] for r in summary_data if r.get('total_prov', 0) == 0]
+    if empty_provs:
+        prov_list_str = ", ".join(empty_provs)
+        html += f"""
+        <div style="margin-top: 15px; padding: 12px; background-color: #f8f9fa; border-left: 4px solid #ffc107; color: #555; font-size: 13px;">
+            <strong>Aviso:</strong> No se encontraron registros para el proveedor <strong>{prov_list_str}</strong> en la fecha consultada.
+        </div>
+        """
+
+    html += """
         <p style="margin-top: 20px;">Se adjunta el reporte detallado en Excel.</p>
     </body>
     </html>
